@@ -13,6 +13,7 @@ from zep_cloud.core.api_error import ApiError as ZepApiError
 
 from ..config import Config
 from .logger import get_logger
+from .locale import t
 
 logger = get_logger("mirofish.zep")
 
@@ -53,6 +54,27 @@ def normalize_zep_search_limit(limit: Any) -> int:
     return min(normalized, MAX_ZEP_SEARCH_RESULTS)
 
 
+def graph_backend() -> str:
+    explicit = os.environ.get("GRAPH_BACKEND")
+    if explicit is not None:
+        return explicit.strip().lower()
+    return "zep_cloud" if (Config.ZEP_API_KEY or os.environ.get("ZEP_API_KEY") or "").strip() else "local"
+
+
+def graph_backend_ready() -> bool:
+    """Return whether the selected graph backend has the credentials it needs."""
+    return graph_backend() == "local" or bool(
+        (Config.ZEP_API_KEY or os.environ.get("ZEP_API_KEY") or "").strip()
+    )
+
+
+def graph_backend_error() -> str | None:
+    """Return the localized setup error when the selected graph backend is unavailable."""
+    if graph_backend_ready():
+        return None
+    return t("errors.zepApiKeyMissing")
+
+
 @lru_cache(maxsize=4)
 def _cached_zep_client(api_key: str, timeout: float) -> Zep:
     return Zep(
@@ -62,18 +84,25 @@ def _cached_zep_client(api_key: str, timeout: float) -> Zep:
     )
 
 
-def get_zep_client(api_key: str | None = None, timeout: float | None = None) -> Zep:
-    """Return a process-shared, explicitly configured Zep Cloud client."""
+def get_zep_client(api_key: str | None = None, timeout: float | None = None) -> Any:
+    """Return the process-shared client selected by GRAPH_BACKEND."""
+
+    backend = graph_backend()
+    if api_key and "GRAPH_BACKEND" not in os.environ and not Config.ZEP_API_KEY:
+        backend = "zep_cloud"
+    if backend == "local":
+        from ..graph_local import get_local_zep_client
+        return get_local_zep_client()
+    if backend != "zep_cloud":
+        raise ValueError(f"Unsupported GRAPH_BACKEND: {backend}")
 
     # zep-cloud gives ZEP_API_URL precedence even when base_url is explicit.
-    # Reject it so this Cloud-only integration cannot silently target a
-    # self-hosted or compatibility endpoint.
     if os.environ.get("ZEP_API_URL"):
         raise ValueError("ZEP_API_URL is unsupported; unset it to use Zep Cloud")
 
     normalized_key = (api_key or Config.ZEP_API_KEY or "").strip()
     if not normalized_key:
-        raise ValueError("ZEP_API_KEY 未配置")
+        raise ValueError(t("errors.zepApiKeyMissing"))
 
     request_timeout = float(
         timeout if timeout is not None else ZEP_HTTP_REQUEST_TIMEOUT_SECONDS

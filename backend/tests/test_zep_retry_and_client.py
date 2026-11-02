@@ -7,6 +7,13 @@ from zep_cloud.core.api_error import ApiError as ZepApiError
 from app.utils import zep
 
 
+@pytest.fixture(autouse=True)
+def _zep_cloud_backend(monkeypatch):
+    # These tests exercise the Zep Cloud client; a developer .env with GRAPH_BACKEND=local
+    # (loaded into os.environ by app.config) must not switch them to the local backend.
+    monkeypatch.setenv("GRAPH_BACKEND", "zep_cloud")
+
+
 def test_permanent_zep_errors_fail_without_retry():
     calls = []
 
