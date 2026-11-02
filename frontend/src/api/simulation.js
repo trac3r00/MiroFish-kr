@@ -10,10 +10,20 @@ export const createSimulation = (data) => {
 
 /**
  * 准备模拟环境（异步任务）
- * @param {Object} data - { simulation_id, entity_types?, use_llm_for_profiles?, parallel_profile_count?, force_regenerate? }
+ * @param {Object} data - { simulation_id, entity_types?, use_llm_for_profiles?, parallel_profile_count?, force_regenerate?, persona_mix? }
+ *   persona_mix: { preset: 'ko_everyday' | 'en_everyday' | 'zh_everyday' | 'mixed_global' | 'off', seed: number }
+ *   (persona archetype mix used for profile generation; omitted = backend default)
  */
 export const prepareSimulation = (data) => {
   return service.post('/api/simulation/prepare', data)
+}
+
+/**
+ * 获取人设原型预设列表（persona archetype presets）
+ * @returns {Promise} { success, data: [{ id, label, locale, archetype_count }] }
+ */
+export const getPersonaPresets = () => {
+  return service.get('/api/simulation/persona-presets')
 }
 
 /**
@@ -108,6 +118,19 @@ export const getRunStatus = (simulationId) => {
  */
 export const getRunStatusDetail = (simulationId) => {
   return service.get(`/api/simulation/${simulationId}/run-status/detail`)
+}
+
+/**
+ * 增量获取模拟运行详细状态（游标分页，只返回 cursor 之后的新动作）
+ * @param {string} simulationId
+ * @param {number} after - 上次返回的 next_cursor（首次传 0）
+ * @param {number} limit - 单次最多返回的动作数（后端上限 500）
+ * @returns {Promise} { success, data: { actions: [...], next_cursor, ...status fields } }
+ */
+export const getRunDetailSince = (simulationId, after = 0, limit = 200) => {
+  return service.get(`/api/simulation/${simulationId}/run-status/detail`, {
+    params: { after, limit }
+  })
 }
 
 /**

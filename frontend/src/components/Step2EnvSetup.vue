@@ -10,6 +10,7 @@
           </div>
           <div class="step-status">
             <span v-if="phase > 0" class="badge success">{{ $t('common.completed') }}</span>
+            <span v-else-if="awaitingStart" class="badge accent">{{ $t('step2.awaitingSelection') }}</span>
             <span v-else class="badge processing">{{ $t('step2.initializing') }}</span>
           </div>
         </div>
@@ -38,6 +39,46 @@
               <span class="info-value mono">{{ taskId || $t('step2.asyncTaskDone') }}</span>
             </div>
           </div>
+
+          <!-- 人设多样性预设：新模拟在调用 prepare 前先选择 -->
+          <div v-if="awaitingStart" class="persona-mix-section">
+            <div class="persona-mix-header">
+              <span class="persona-mix-title">{{ $t('step2.personaMixTitle') }}</span>
+              <span class="persona-mix-desc">{{ $t('step2.personaMixDesc') }}</span>
+            </div>
+            <div class="preset-grid" role="radiogroup" :aria-label="$t('step2.personaMixTitle')">
+              <button
+                v-for="preset in personaPresets"
+                :key="preset.id"
+                type="button"
+                role="radio"
+                class="preset-option"
+                :class="{ selected: selectedPreset === preset.id }"
+                :aria-checked="selectedPreset === preset.id"
+                @click="selectedPreset = preset.id"
+              >
+                <span class="preset-option-head">
+                  <span class="preset-id">{{ preset.id }}</span>
+                  <span v-if="preset.archetype_count" class="preset-count">{{ $t('step2.archetypeCount', { count: preset.archetype_count }) }}</span>
+                </span>
+                <span class="preset-name">{{ presetLabel(preset) }}</span>
+                <span v-if="presetDescription(preset)" class="preset-desc">{{ presetDescription(preset) }}</span>
+              </button>
+            </div>
+            <div class="persona-mix-footer">
+              <div class="seed-control">
+                <label class="seed-field">
+                  <span class="seed-label">{{ $t('step2.personaSeed') }}</span>
+                  <input v-model.number="personaSeed" type="number" min="0" step="1" class="seed-input" />
+                </label>
+                <button type="button" class="seed-shuffle" :title="$t('step2.personaSeedShuffle')" :aria-label="$t('step2.personaSeedShuffle')" @click="personaSeed = randomSeed()">↻</button>
+                <span class="seed-hint">{{ $t('step2.personaSeedHint') }}</span>
+              </div>
+              <button class="action-btn primary" @click="handleStartPreparation">
+                {{ $t('step2.startPersonaGeneration') }} ➝
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -47,6 +88,7 @@
           <div class="step-info">
             <span class="step-num">02</span>
             <span class="step-title">{{ $t('step2.generateAgentPersona') }}</span>
+            <ModelBadge v-if="profileStageModel" :model="profileStageModel.model" :profile-label="profileStageModel.label" />
           </div>
           <div class="step-status">
             <span v-if="phase > 1" class="badge success">{{ $t('common.completed') }}</span>
@@ -60,6 +102,12 @@
           <p class="description">
             {{ $t('step2.generateAgentPersonaDesc') }}
           </p>
+
+          <div v-if="effectivePersonaMix" class="persona-mix-applied">
+            <span class="persona-mix-applied-label">{{ $t('step2.personaMixApplied') }}</span>
+            <span class="persona-mix-applied-value">{{ presetLabelById(effectivePersonaMix.preset) }}</span>
+            <span v-if="effectivePersonaMix.seed !== undefined && effectivePersonaMix.seed !== null" class="persona-mix-applied-seed">{{ $t('step2.personaSeed') }} {{ effectivePersonaMix.seed }}</span>
+          </div>
 
           <!-- Profiles Stats -->
           <div v-if="profiles.length > 0" class="stats-grid">
@@ -119,6 +167,7 @@
           <div class="step-info">
             <span class="step-num">03</span>
             <span class="step-title">{{ $t('step2.dualPlatformConfig') }}</span>
+            <ModelBadge v-if="configStageModel" :model="configStageModel.model" :profile-label="configStageModel.label" />
           </div>
           <div class="step-status">
             <span v-if="phase > 2" class="badge success">{{ $t('common.completed') }}</span>
@@ -202,6 +251,16 @@
                       <span class="agent-stance" :class="'stance-' + agent.stance">{{ agent.stance }}</span>
                     </div>
                   </div>
+
+                  <!-- 人设原型 + 该 Agent 使用的模型 -->
+                  <div v-if="agent.archetype || agent.llm_profile" class="agent-persona-row">
+                    <span class="agent-archetype" :class="{ 'is-empty': !agent.archetype }" :title="agent.archetype || ''">
+                      <span class="agent-archetype-key">{{ $t('step2.archetypeLabel') }}</span>
+                      <span v-if="archetypeLocale(agent.archetype)" class="agent-archetype-locale">{{ archetypeLocale(agent.archetype) }}</span>
+                      <span class="agent-archetype-name">{{ archetypeLabel(agent) || $t('step2.noArchetype') }}</span>
+                    </span>
+                    <ModelBadge v-if="agentModel(agent)" :model="agentModel(agent).model" :profile-label="agentModel(agent).label" />
+                  </div>
                   
                   <!-- 活跃时间轴 -->
                   <div class="agent-timeline">
@@ -260,6 +319,24 @@
                       </div>
                     </div>
                   </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Agent 模型分布（llm_models） -->
+            <div v-if="modelMix.length" class="config-block">
+              <div class="config-block-header">
+                <span class="config-block-title">{{ $t('step2.modelMixTitle') }}</span>
+                <span class="config-block-badge">{{ $t('step2.agentCountUnit', { count: modelMixTotal }) }}</span>
+              </div>
+              <p class="model-mix-desc">{{ $t('step2.modelMixDesc') }}</p>
+              <div class="model-mix-list">
+                <div v-for="m in modelMix" :key="m.id" class="model-mix-row">
+                  <ModelBadge :model="m.model" :profile-label="m.label" />
+                  <div class="model-mix-bar" aria-hidden="true">
+                    <span class="model-mix-fill" :style="{ width: modelMixPercent(m.count) + '%' }"></span>
+                  </div>
+                  <span class="model-mix-count">{{ $t('step2.agentCountUnit', { count: m.count }) }} · {{ modelMixPercent(m.count) }}%</span>
                 </div>
               </div>
             </div>
@@ -509,6 +586,17 @@
             </Transition>
           </div>
 
+          <!-- 模拟 Agent 使用的模型：配置生成后为实际分布，否则为路由中的模型池 -->
+          <div v-if="modelMix.length || agentPoolModels.length" class="agent-models-row">
+            <span class="agent-models-label">{{ $t('step2.simulationAgentModels') }}</span>
+            <template v-if="modelMix.length">
+              <ModelBadge v-for="m in modelMix" :key="m.id" :model="m.model" :profile-label="m.label" />
+            </template>
+            <template v-else>
+              <ModelBadge v-for="m in agentPoolModels" :key="m.id" :model="m.model" :profile-label="m.label" />
+            </template>
+          </div>
+
           <div class="action-group dual">
             <button 
               class="action-btn secondary"
@@ -637,12 +725,15 @@ import { useI18n } from 'vue-i18n'
 import {
   prepareSimulation,
   getPrepareStatus,
+  getSimulation,
   getSimulationProfilesRealtime,
-  getSimulationConfig,
-  getSimulationConfigRealtime
+  getSimulationConfigRealtime,
+  getPersonaPresets
 } from '../api/simulation'
+import { getLlmStatus } from '../api/llm'
+import ModelBadge from './ModelBadge.vue'
 
-const { t } = useI18n()
+const { t, te, locale } = useI18n()
 
 const props = defineProps({
   simulationId: String,  // 从父组件传入
@@ -675,6 +766,106 @@ let lastLoggedConfigStage = ''
 const useCustomRounds = ref(false) // 默认使用自动配置轮数
 const customMaxRounds = ref(40)   // 默认推荐40轮
 
+// 人设多样性预设（persona archetype mix）
+// 后端 GET /api/simulation/persona-presets 不可用时使用的静态列表
+const FALLBACK_PRESET_IDS = ['ko_everyday', 'en_everyday', 'zh_everyday', 'mixed_global', 'off']
+const randomSeed = () => Math.floor(Math.random() * 1_000_000)
+const defaultPresetFor = (loc, presets) => {
+  const ids = presets.map(p => p.id)
+  const wanted = `${String(loc || '').split('-')[0]}_everyday`
+  if (ids.includes(wanted)) return wanted
+  if (ids.includes('mixed_global')) return 'mixed_global'
+  return ids[0] || 'off'
+}
+const fallbackPresets = () => FALLBACK_PRESET_IDS.map(id => ({ id, label: null, locale: null, archetype_count: null }))
+// 后端按请求语言过滤预设（例如 ko 只返回 ko_everyday），但 prepare 接受全部预设：
+// 合并时保留后端的顺序与计数，再补上契约中缺少的预设（mixed_global / off 等）
+const mergePresets = (serverList) => {
+  const ids = new Set(serverList.map(p => p.id))
+  return [...serverList, ...fallbackPresets().filter(p => !ids.has(p.id))]
+}
+const personaPresets = ref(fallbackPresets())
+const selectedPreset = ref(defaultPresetFor(locale.value, personaPresets.value))
+const personaSeed = ref(randomSeed())
+const awaitingStart = ref(false)      // 新模拟：等待用户选择预设后再调用 prepare
+const appliedPersonaMix = ref(null)   // 本次 prepare 实际发送的 { preset, seed }
+
+const presetLabel = (preset) => {
+  const key = `step2.personaPreset.${preset.id}`
+  if (te(key)) return t(key)
+  return preset.label || preset.id
+}
+const presetDescription = (preset) => {
+  const key = `step2.personaPresetDesc.${preset.id}`
+  return te(key) ? t(key) : ''
+}
+const presetLabelById = (id) => {
+  const preset = personaPresets.value.find(p => p.id === id)
+  return preset ? presetLabel(preset) : id
+}
+// 已应用的预设：优先读取后端写入配置的 persona_mix，其次是本次发送的值
+const effectivePersonaMix = computed(() => simulationConfig.value?.persona_mix || appliedPersonaMix.value)
+
+// 原型标签：预设接口若附带 archetypes [{id,label}] 则映射，否则退化为人类可读的 id
+const archetypeLabels = computed(() => {
+  const map = {}
+  for (const preset of personaPresets.value) {
+    for (const archetype of (preset.archetypes || [])) {
+      if (archetype?.id) map[archetype.id] = archetype.label || archetype.id
+    }
+  }
+  return map
+})
+const archetypeLocale = (archetypeId) => {
+  if (!archetypeId || !archetypeId.includes(':')) return null
+  return archetypeId.split(':')[0].toUpperCase()
+}
+const archetypeLabel = (agent) => {
+  if (agent.archetype_label) return agent.archetype_label
+  const id = agent.archetype
+  if (!id) return null
+  const bare = id.includes(':') ? id.slice(id.indexOf(':') + 1) : id
+  return archetypeLabels.value[id] || archetypeLabels.value[bare] || bare.replace(/_/g, ' ')
+}
+
+// LLM 路由（各阶段使用的模型）：GET /api/llm/status
+const llmStatus = ref(null)
+const stageModel = (stage) => {
+  const status = llmStatus.value
+  if (!status?.routes || !Array.isArray(status.profiles)) return null
+  const profile = status.profiles.find(p => p.id === status.routes[stage])
+  return profile ? { model: profile.model, label: profile.label || profile.id } : null
+}
+const profileStageModel = computed(() => stageModel('profile'))
+const configStageModel = computed(() => stageModel('config'))
+// 模拟 Agent 的模型池（配置生成前的计划值）
+const agentPoolModels = computed(() => {
+  const status = llmStatus.value
+  if (!status?.agent_pool || !Array.isArray(status.profiles)) return []
+  return Object.keys(status.agent_pool)
+    .map(id => status.profiles.find(p => p.id === id))
+    .filter(Boolean)
+    .map(p => ({ id: p.id, model: p.model, label: p.label || p.id }))
+})
+
+// 每个 Agent 的模型分布：配置中的 llm_models = { profile_id: { label, model, count } }
+const llmModels = computed(() => simulationConfig.value?.llm_models || {})
+const modelMix = computed(() => {
+  return Object.entries(llmModels.value)
+    .map(([id, info]) => ({ id, label: info?.label || id, model: info?.model || id, count: Number(info?.count) || 0 }))
+    .sort((a, b) => b.count - a.count)
+})
+const modelMixTotal = computed(() => modelMix.value.reduce((sum, m) => sum + m.count, 0))
+const modelMixPercent = (count) => {
+  if (!modelMixTotal.value) return 0
+  return Math.round((count / modelMixTotal.value) * 100)
+}
+const agentModel = (agent) => {
+  if (!agent.llm_profile) return null
+  const info = llmModels.value[agent.llm_profile]
+  return { model: info?.model || agent.llm_profile, label: info?.label || agent.llm_profile }
+}
+
 // Watch stage to update phase
 watch(currentStage, (newStage) => {
   if (newStage === '生成Agent人设' || newStage === 'generating_profiles') {
@@ -682,7 +873,7 @@ watch(currentStage, (newStage) => {
   } else if (newStage === '生成模拟配置' || newStage === 'generating_config') {
     phase.value = 2
     // 进入配置生成阶段，开始轮询配置
-    if (!configTimer) {
+    if (!configPoller.active) {
       addLog(t('log.startGeneratingConfig'))
       startConfigPolling()
     }
@@ -706,10 +897,36 @@ const autoGeneratedRounds = computed(() => {
   return Math.max(calculatedRounds, 40)
 })
 
-// Polling timer
-let pollTimer = null
-let profilesTimer = null
-let configTimer = null
+// Polling：每次请求完成后再用 setTimeout 安排下一次，保证同一轮询不会重叠；unmount 时全部停止
+const createPoller = (fn, intervalMs) => {
+  let timer = null
+  let active = false
+  const tick = async () => {
+    timer = null
+    if (!active) return
+    try {
+      await fn()
+    } finally {
+      if (active) timer = setTimeout(tick, intervalMs)
+    }
+  }
+  return {
+    get active() { return active },
+    start() {
+      if (active) return
+      active = true
+      timer = setTimeout(tick, intervalMs)
+    },
+    stop() {
+      active = false
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+    }
+  }
+}
+let disposed = false
 
 // Computed
 const displayProfiles = computed(() => {
@@ -776,8 +993,70 @@ const selectProfile = (profile) => {
   selectedProfile.value = profile
 }
 
-// 自动开始准备模拟
-const startPrepareSimulation = async () => {
+// 预设列表（失败时保留静态列表）
+const loadPersonaPresets = async () => {
+  try {
+    const res = await getPersonaPresets()
+    const list = Array.isArray(res?.data) ? res.data : (res?.data?.presets || [])
+    if (res?.success && list.length > 0) {
+      personaPresets.value = mergePresets(list)
+      if (!personaPresets.value.some(p => p.id === selectedPreset.value)) {
+        selectedPreset.value = defaultPresetFor(locale.value, personaPresets.value)
+      }
+    }
+  } catch (err) {
+    addLog(t('log.presetsLoadFailed'))
+  }
+}
+
+// 各阶段模型路由（失败时不显示徽标）
+const loadLLMStatus = async () => {
+  try {
+    const res = await getLlmStatus()
+    if (res?.success && res.data) {
+      llmStatus.value = res.data
+    }
+  } catch (err) {
+    addLog(t('log.llmStatusFailed', { error: err.message || t('common.unknownError') }))
+  }
+}
+
+// 判断是否需要先让用户选择人设预设：
+// 'prepared'  已生成配置 -> 直接走 prepare（后端返回 already_prepared）
+// 'preparing' 正在生成   -> 与旧流程一致，直接走 prepare 继续轮询
+// 'fresh'     新模拟     -> 显示预设选择器，等待用户点击开始
+const checkPreparedState = async () => {
+  try {
+    const res = await getSimulation(props.simulationId)
+    const data = res?.data
+    if (!res?.success || !data) return 'fresh'
+    if (data.config_generated) return 'prepared'
+    if (data.status === 'preparing') return 'preparing'
+    return 'fresh'
+  } catch (err) {
+    console.warn('读取模拟状态失败:', err)
+    return 'fresh'
+  }
+}
+
+const logModelMix = () => {
+  if (modelMix.value.length === 0) return
+  const mix = modelMix.value.map(m => `${m.model} ×${m.count}`).join(', ')
+  addLog(t('log.modelMix', { mix }))
+}
+
+// 用户在预设选择器中点击“开始”
+const handleStartPreparation = () => {
+  awaitingStart.value = false
+  const seed = Number.isInteger(personaSeed.value) && personaSeed.value >= 0 ? personaSeed.value : randomSeed()
+  personaSeed.value = seed
+  appliedPersonaMix.value = { preset: selectedPreset.value, seed }
+  addLog(t('log.personaMixSelected', { preset: presetLabelById(selectedPreset.value), seed }))
+  startPrepareSimulation({ persona_mix: appliedPersonaMix.value })
+}
+
+// 开始准备模拟（extra 会合并进 prepare 请求体，例如 persona_mix）
+const startPrepareSimulation = async (extra = {}) => {
   if (!props.simulationId) {
     addLog(t('log.errorMissingSimId'))
     emit('update-status', 'error')
@@ -794,7 +1073,8 @@ const startPrepareSimulation = async () => {
     const res = await prepareSimulation({
       simulation_id: props.simulationId,
       use_llm_for_profiles: true,
-      parallel_profile_count: 5
+      parallel_profile_count: 5,
+      ...extra
     })
     
     if (res.success && res.data) {
@@ -832,29 +1112,17 @@ const startPrepareSimulation = async () => {
   }
 }
 
-const startPolling = () => {
-  pollTimer = setInterval(pollPrepareStatus, 2000)
-}
+const statusPoller = createPoller(() => pollPrepareStatus(), 2000)
+const profilesPoller = createPoller(() => fetchProfilesRealtime(), 3000)
+const configPoller = createPoller(() => fetchConfigRealtime(), 2000)
 
-const stopPolling = () => {
-  if (pollTimer) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
-}
-
-const startProfilesPolling = () => {
-  profilesTimer = setInterval(fetchProfilesRealtime, 3000)
-}
-
-const stopProfilesPolling = () => {
-  if (profilesTimer) {
-    clearInterval(profilesTimer)
-    profilesTimer = null
-  }
-}
+const startPolling = () => statusPoller.start()
+const stopPolling = () => statusPoller.stop()
+const startProfilesPolling = () => profilesPoller.start()
+const stopProfilesPolling = () => profilesPoller.stop()
 
 const pollPrepareStatus = async () => {
+  if (disposed) return
   if (!taskId.value && !props.simulationId) return
   
   try {
@@ -915,7 +1183,7 @@ const pollPrepareStatus = async () => {
 }
 
 const fetchProfilesRealtime = async () => {
-  if (!props.simulationId) return
+  if (disposed || !props.simulationId) return
   
   try {
     const res = await getSimulationProfilesRealtime(props.simulationId)
@@ -959,19 +1227,11 @@ const fetchProfilesRealtime = async () => {
 }
 
 // 配置轮询
-const startConfigPolling = () => {
-  configTimer = setInterval(fetchConfigRealtime, 2000)
-}
-
-const stopConfigPolling = () => {
-  if (configTimer) {
-    clearInterval(configTimer)
-    configTimer = null
-  }
-}
+const startConfigPolling = () => configPoller.start()
+const stopConfigPolling = () => configPoller.stop()
 
 const fetchConfigRealtime = async () => {
-  if (!props.simulationId) return
+  if (disposed || !props.simulationId) return
   
   try {
     const res = await getSimulationConfigRealtime(props.simulationId)
@@ -1019,6 +1279,7 @@ const fetchConfigRealtime = async () => {
           const narrative = data.config.event_config.narrative_direction
           addLog(t('log.narrativeDirection', { direction: narrative.length > 50 ? narrative.substring(0, 50) + '...' : narrative }))
         }
+        logModelMix()
         
         stopConfigPolling()
         phase.value = 4
@@ -1060,6 +1321,7 @@ const loadPreparedData = async () => {
           addLog(t('log.configSummaryHours', { hours: configState.summary.simulation_hours }))
           addLog(t('log.configSummaryPostsAlt', { count: configState.summary.initial_posts_count }))
         }
+        logModelMix()
 
         addLog(t('log.envSetupComplete'))
         phase.value = 4
@@ -1086,15 +1348,24 @@ watch(() => props.systemLogs?.length, () => {
   })
 })
 
-onMounted(() => {
-  // 自动开始准备流程
-  if (props.simulationId) {
-    addLog(t('log.step2Init'))
+onMounted(async () => {
+  if (!props.simulationId) return
+  addLog(t('log.step2Init'))
+  // 并行加载：各阶段模型路由 + 人设预设列表（两者都不阻塞主流程）
+  loadLLMStatus()
+  loadPersonaPresets()
+  // 新模拟先让用户选择人设预设；已准备/正在准备的模拟保持原有自动流程
+  const state = await checkPreparedState()
+  if (disposed) return
+  if (state === 'fresh') {
+    awaitingStart.value = true
+  } else {
     startPrepareSimulation()
   }
 })
 
 onUnmounted(() => {
+  disposed = true
   stopPolling()
   stopProfilesPolling()
   stopConfigPolling()
@@ -2584,6 +2855,342 @@ onUnmounted(() => {
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* Persona Mix (archetype preset) */
+.step-info {
+  flex-wrap: wrap;
+}
+
+.persona-mix-section {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid #EAEAEA;
+  animation: fadeIn 0.3s ease;
+}
+
+.persona-mix-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 14px;
+}
+
+.persona-mix-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1E293B;
+}
+
+.persona-mix-desc {
+  font-size: 12px;
+  color: #94A3B8;
+  line-height: 1.5;
+}
+
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(160px, 100%), 1fr));
+  gap: 10px;
+}
+
+.preset-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  text-align: left;
+  font-family: inherit;
+  background: #F8FAFC;
+  border: 1px solid #E2E8F0;
+  border-radius: 6px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.preset-option:hover {
+  border-color: #999;
+  background: #FFF;
+}
+
+.preset-option.selected {
+  border-color: #000;
+  background: #FFF;
+  box-shadow: 0 0 0 1px #000;
+}
+
+.preset-option-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.preset-id {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: #94A3B8;
+}
+
+.preset-option.selected .preset-id {
+  color: #000;
+}
+
+.preset-count {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: #475569;
+  background: #F1F5F9;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.preset-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1E293B;
+}
+
+.preset-desc {
+  font-size: 11px;
+  color: #64748B;
+  line-height: 1.5;
+}
+
+.persona-mix-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.seed-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.seed-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.seed-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748B;
+}
+
+.seed-input {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: #1E293B;
+  background: #FFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 4px;
+  padding: 6px 8px;
+  width: 110px;
+  outline: none;
+}
+
+.seed-input:focus {
+  border-color: #000;
+}
+
+.seed-shuffle {
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1;
+  color: #64748B;
+  background: #F5F5F5;
+  border: none;
+  border-radius: 4px;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.seed-shuffle:hover {
+  background: #E5E5E5;
+  color: #000;
+}
+
+.seed-hint {
+  font-size: 11px;
+  color: #94A3B8;
+}
+
+.persona-mix-applied {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  background: #F8FAFC;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 16px;
+}
+
+.persona-mix-applied-label {
+  font-size: 11px;
+  color: #94A3B8;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.persona-mix-applied-value {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1E293B;
+}
+
+.persona-mix-applied-seed {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: #475569;
+  background: #F1F5F9;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* Agent archetype + model */
+.agent-persona-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.agent-archetype {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: #1E293B;
+  background: #EEF2FF;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+
+.agent-archetype.is-empty {
+  background: #F1F5F9;
+  color: #94A3B8;
+}
+
+.agent-archetype-key {
+  font-size: 9px;
+  color: #6366F1;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.agent-archetype.is-empty .agent-archetype-key {
+  color: #94A3B8;
+}
+
+.agent-archetype-locale {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: #6366F1;
+}
+
+.agent-archetype-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Model mix (llm_models distribution) */
+.model-mix-desc {
+  font-size: 12px;
+  color: #94A3B8;
+  line-height: 1.5;
+  margin: 0 0 12px 0;
+}
+
+.model-mix-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.model-mix-row {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: #F9F9F9;
+  border-radius: 6px;
+}
+
+.model-mix-bar {
+  height: 6px;
+  background: #E2E8F0;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.model-mix-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #6366F1, #A855F7);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.model-mix-count {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: #475569;
+  white-space: nowrap;
+}
+
+.agent-models-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding: 8px 12px;
+  background: #F8FAFC;
+  border-radius: 6px;
+}
+
+.agent-models-label {
+  font-size: 11px;
+  color: #94A3B8;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+@media (max-width: 480px) {
+  .model-mix-row {
+    grid-template-columns: 1fr auto;
+  }
+
+  .model-mix-row .model-mix-bar {
+    grid-column: 1 / -1;
+  }
+
+  .persona-mix-footer .action-btn {
+    width: 100%;
+    justify-content: center;
+    padding: 12px 16px;
+  }
 }
 
 .fade-enter-active,

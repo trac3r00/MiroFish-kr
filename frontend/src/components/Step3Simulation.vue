@@ -9,7 +9,7 @@
             <svg class="platform-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
             </svg>
-            <span class="platform-name">Info Plaza</span>
+            <span class="platform-name">{{ $t('step3.platformTwitter') }}</span>
             <span v-if="runStatus.twitter_completed" class="status-badge">
               <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3">
                 <polyline points="20 6 9 17 4 12"></polyline>
@@ -18,21 +18,21 @@
           </div>
           <div class="platform-stats">
             <span class="stat">
-              <span class="stat-label">ROUND</span>
+              <span class="stat-label">{{ $t('step3.statRound') }}</span>
               <span class="stat-value mono">{{ runStatus.twitter_current_round || 0 }}<span class="stat-total">/{{ runStatus.total_rounds || maxRounds || '-' }}</span></span>
             </span>
             <span class="stat">
-              <span class="stat-label">TIME</span>
+              <span class="stat-label">{{ $t('step3.statTime') }}</span>
               <span class="stat-value mono">{{ twitterElapsedTime }}</span>
             </span>
             <span class="stat">
-              <span class="stat-label">ACTS</span>
+              <span class="stat-label">{{ $t('step3.statActs') }}</span>
               <span class="stat-value mono">{{ runStatus.twitter_actions_count || 0 }}</span>
             </span>
           </div>
           <!-- 可用动作提示 -->
           <div class="actions-tooltip">
-            <div class="tooltip-title">Available Actions</div>
+            <div class="tooltip-title">{{ $t('step3.availableActions') }}</div>
             <div class="tooltip-actions">
               <span class="tooltip-action">POST</span>
               <span class="tooltip-action">LIKE</span>
@@ -50,7 +50,7 @@
             <svg class="platform-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
             </svg>
-            <span class="platform-name">Topic Community</span>
+            <span class="platform-name">{{ $t('step3.platformReddit') }}</span>
             <span v-if="runStatus.reddit_completed" class="status-badge">
               <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3">
                 <polyline points="20 6 9 17 4 12"></polyline>
@@ -59,21 +59,21 @@
           </div>
           <div class="platform-stats">
             <span class="stat">
-              <span class="stat-label">ROUND</span>
+              <span class="stat-label">{{ $t('step3.statRound') }}</span>
               <span class="stat-value mono">{{ runStatus.reddit_current_round || 0 }}<span class="stat-total">/{{ runStatus.total_rounds || maxRounds || '-' }}</span></span>
             </span>
             <span class="stat">
-              <span class="stat-label">TIME</span>
+              <span class="stat-label">{{ $t('step3.statTime') }}</span>
               <span class="stat-value mono">{{ redditElapsedTime }}</span>
             </span>
             <span class="stat">
-              <span class="stat-label">ACTS</span>
+              <span class="stat-label">{{ $t('step3.statActs') }}</span>
               <span class="stat-value mono">{{ runStatus.reddit_actions_count || 0 }}</span>
             </span>
           </div>
           <!-- 可用动作提示 -->
           <div class="actions-tooltip">
-            <div class="tooltip-title">Available Actions</div>
+            <div class="tooltip-title">{{ $t('step3.availableActions') }}</div>
             <div class="tooltip-actions">
               <span class="tooltip-action">POST</span>
               <span class="tooltip-action">COMMENT</span>
@@ -106,9 +106,9 @@
     <!-- Main Content: Dual Timeline -->
     <div class="main-content-area" ref="scrollContainer">
       <!-- Timeline Header -->
-      <div class="timeline-header" v-if="allActions.length > 0">
+      <div class="timeline-header" v-if="totalActionsCount > 0">
         <div class="timeline-stats">
-          <span class="total-count">TOTAL EVENTS: <span class="mono">{{ allActions.length }}</span></span>
+          <span class="total-count">{{ $t('step3.totalEvents') }}: <span class="mono">{{ totalActionsCount }}</span></span>
           <span class="platform-breakdown">
             <span class="breakdown-item twitter">
               <svg class="mini-icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
@@ -121,6 +121,9 @@
             </span>
           </span>
         </div>
+        <span v-if="droppedActionsCount > 0" class="timeline-note">
+          {{ $t('step3.showingLatest', { count: allActions.length, dropped: droppedActionsCount }) }}
+        </span>
       </div>
       
       <!-- Timeline Feed -->
@@ -130,7 +133,7 @@
         <TransitionGroup name="timeline-item">
           <div 
             v-for="action in chronologicalActions" 
-            :key="action._uniqueId || action.id || `${action.timestamp}-${action.agent_id}`" 
+            :key="action.cursor" 
             class="timeline-item"
             :class="action.platform"
           >
@@ -170,7 +173,7 @@
                   <div v-if="action.action_args?.original_content" class="quoted-block">
                     <div class="quote-header">
                       <svg class="icon-small" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
-                      <span class="quote-label">@{{ action.action_args.original_author_name || 'User' }}</span>
+                      <span class="quote-label">@{{ action.action_args.original_author_name || $t('step3.unknownUser') }}</span>
                     </div>
                     <div class="quote-text">
                       {{ truncateContent(action.action_args.original_content, 150) }}
@@ -182,7 +185,7 @@
                 <template v-if="action.action_type === 'REPOST'">
                   <div class="repost-info">
                     <svg class="icon-small" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>
-                    <span class="repost-label">Reposted from @{{ action.action_args?.original_author_name || 'User' }}</span>
+                    <span class="repost-label">{{ $t('step3.repostedFrom', { name: '@' + (action.action_args?.original_author_name || $t('step3.unknownUser')) }) }}</span>
                   </div>
                   <div v-if="action.action_args?.original_content" class="repost-content">
                     {{ truncateContent(action.action_args.original_content, 200) }}
@@ -193,7 +196,7 @@
                 <template v-if="action.action_type === 'LIKE_POST'">
                   <div class="like-info">
                     <svg class="icon-small filled" viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
-                    <span class="like-label">Liked @{{ action.action_args?.post_author_name || 'User' }}'s post</span>
+                    <span class="like-label">{{ $t('step3.likedPost', { name: '@' + (action.action_args?.post_author_name || $t('step3.unknownUser')) }) }}</span>
                   </div>
                   <div v-if="action.action_args?.post_content" class="liked-content">
                     "{{ truncateContent(action.action_args.post_content, 120) }}"
@@ -207,7 +210,7 @@
                   </div>
                   <div v-if="action.action_args?.post_id" class="comment-context">
                     <svg class="icon-small" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg>
-                    <span>Reply to post #{{ action.action_args.post_id }}</span>
+                    <span>{{ $t('step3.replyToPost', { id: action.action_args.post_id }) }}</span>
                   </div>
                 </template>
 
@@ -215,7 +218,7 @@
                 <template v-if="action.action_type === 'SEARCH_POSTS'">
                   <div class="search-info">
                     <svg class="icon-small" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-                    <span class="search-label">Search Query:</span>
+                    <span class="search-label">{{ $t('step3.searchQuery') }}</span>
                     <span class="search-query">"{{ action.action_args?.query || '' }}"</span>
                   </div>
                 </template>
@@ -224,7 +227,7 @@
                 <template v-if="action.action_type === 'FOLLOW'">
                   <div class="follow-info">
                     <svg class="icon-small" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><line x1="20" y1="8" x2="20" y2="14"></line><line x1="23" y1="11" x2="17" y2="11"></line></svg>
-                    <span class="follow-label">Followed @{{ action.action_args?.target_user || action.action_args?.user_id || 'User' }}</span>
+                    <span class="follow-label">{{ $t('step3.followed', { name: '@' + (action.action_args?.target_user || action.action_args?.user_id || $t('step3.unknownUser')) }) }}</span>
                   </div>
                 </template>
 
@@ -233,7 +236,7 @@
                   <div class="vote-info">
                     <svg v-if="action.action_type === 'UPVOTE_POST'" class="icon-small" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"></polyline></svg>
                     <svg v-else class="icon-small" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
-                    <span class="vote-label">{{ action.action_type === 'UPVOTE_POST' ? 'Upvoted' : 'Downvoted' }} Post</span>
+                    <span class="vote-label">{{ action.action_type === 'UPVOTE_POST' ? $t('step3.upvotedPost') : $t('step3.downvotedPost') }}</span>
                   </div>
                   <div v-if="action.action_args?.post_content" class="voted-content">
                     "{{ truncateContent(action.action_args.post_content, 120) }}"
@@ -244,7 +247,7 @@
                 <template v-if="action.action_type === 'DO_NOTHING'">
                   <div class="idle-info">
                     <svg class="icon-small" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-                    <span class="idle-label">Action Skipped</span>
+                    <span class="idle-label">{{ $t('step3.actionSkipped') }}</span>
                   </div>
                 </template>
 
@@ -255,16 +258,21 @@
               </div>
 
               <div class="card-footer">
+                <ModelBadge
+                  v-if="agentModel(action)"
+                  class="footer-model"
+                  :model="agentModel(action).model"
+                  :profile-label="agentModel(action).label"
+                />
                 <span class="time-tag">R{{ action.round_num }} • {{ formatActionTime(action.timestamp) }}</span>
-                <!-- Platform tag removed as it is in header now -->
               </div>
             </div>
           </div>
         </TransitionGroup>
 
-        <div v-if="allActions.length === 0" class="waiting-state">
+        <div v-if="totalActionsCount === 0" class="waiting-state">
           <div class="pulse-ring"></div>
-          <span>Waiting for agent actions...</span>
+          <span>{{ $t('step3.waitingForActions') }}</span>
         </div>
       </div>
     </div>
@@ -272,8 +280,8 @@
     <!-- Bottom Info / Logs -->
     <div class="system-logs">
       <div class="log-header">
-        <span class="log-title">SIMULATION MONITOR</span>
-        <span class="log-id">{{ simulationId || 'NO_SIMULATION' }}</span>
+        <span class="log-title">{{ $t('step3.monitorTitle') }}</span>
+        <span class="log-id">{{ simulationId || $t('step3.noSimulation') }}</span>
       </div>
       <div class="log-content" ref="logContent">
         <div class="log-line" v-for="(log, idx) in systemLogs" :key="idx">
@@ -293,11 +301,12 @@ import {
   startSimulation,
   stopSimulation,
   getRunStatus,
-  getRunStatusDetail
+  getRunDetailSince
 } from '../api/simulation'
 import { generateReport } from '../api/report'
+import ModelBadge from './ModelBadge.vue'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 const props = defineProps({
   simulationId: String,
@@ -315,6 +324,12 @@ const emit = defineEmits(['go-back', 'next-step', 'add-log', 'update-status'])
 
 const router = useRouter()
 
+// Polling / feed constants
+const STATUS_INTERVAL_MS = 2000
+const DETAIL_INTERVAL_MS = 3000
+const DETAIL_PAGE_LIMIT = 200 // backend default; the backend clamps at 500
+const MAX_RENDERED_ACTIONS = 500 // older actions are dropped from the page beyond this
+
 // State
 const isGeneratingReport = ref(false)
 const phase = ref(0) // 0: 未开始, 1: 运行中, 2: 已完成
@@ -322,9 +337,15 @@ const isStarting = ref(false)
 const isStopping = ref(false)
 const startError = ref(null)
 const runStatus = ref({})
-const allActions = ref([]) // 所有动作（增量累积）
-const actionIds = ref(new Set()) // 用于去重的动作ID集合
+const allActions = ref([]) // rendered window: at most MAX_RENDERED_ACTIONS, ascending cursor
+const seenCounts = ref({ total: 0, twitter: 0, reddit: 0 }) // every action received, including dropped ones
+const droppedActionsCount = ref(0)
+const llmModels = ref({}) // { profile_id: { label, model, count } } from the detail response
 const scrollContainer = ref(null)
+
+// Cursor state (read only by the detail poller, so it does not need to be reactive)
+let nextCursor = 0
+let cursorEpoch = null
 
 // Computed
 // 按时间顺序显示动作（最新的在最后面，即底部）
@@ -332,22 +353,29 @@ const chronologicalActions = computed(() => {
   return allActions.value
 })
 
-// 各平台动作计数
-const twitterActionsCount = computed(() => {
-  return allActions.value.filter(a => a.platform === 'twitter').length
-})
+// 各平台动作计数（包含已从页面移除的旧动作）
+const totalActionsCount = computed(() => seenCounts.value.total)
+const twitterActionsCount = computed(() => seenCounts.value.twitter)
+const redditActionsCount = computed(() => seenCounts.value.reddit)
 
-const redditActionsCount = computed(() => {
-  return allActions.value.filter(a => a.platform === 'reddit').length
-})
+// Locale-aware formatters (rebuilt when the UI language changes)
+const timeFormatter = computed(() => new Intl.DateTimeFormat(locale.value, {
+  hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
+}))
+const hourFormatter = computed(() => new Intl.NumberFormat(locale.value, { style: 'unit', unit: 'hour', unitDisplay: 'narrow' }))
+const minuteFormatter = computed(() => new Intl.NumberFormat(locale.value, { style: 'unit', unit: 'minute', unitDisplay: 'narrow' }))
 
 // 格式化模拟流逝时间（根据轮次和每轮分钟数计算）
 const formatElapsedTime = (currentRound) => {
-  if (!currentRound || currentRound <= 0) return '0h 0m'
-  const totalMinutes = currentRound * props.minutesPerRound
-  const hours = Math.floor(totalMinutes / 60)
-  const minutes = totalMinutes % 60
-  return `${hours}h ${minutes}m`
+  const totalMinutes = currentRound > 0 ? currentRound * props.minutesPerRound : 0
+  return `${hourFormatter.value.format(Math.floor(totalMinutes / 60))} ${minuteFormatter.value.format(totalMinutes % 60)}`
+}
+
+// Model assigned to the acting agent, resolved through llm_models (same lookup as Step2)
+const agentModel = (action) => {
+  if (!action.llm_profile) return null
+  const info = llmModels.value[action.llm_profile]
+  return { model: info?.model || action.llm_profile, label: info?.label || action.llm_profile }
 }
 
 // Twitter平台的模拟流逝时间
@@ -369,8 +397,9 @@ const addLog = (msg) => {
 const resetAllState = () => {
   phase.value = 0
   runStatus.value = {}
-  allActions.value = []
-  actionIds.value = new Set()
+  resetActionFeed()
+  cursorEpoch = null
+  llmModels.value = {}
   prevTwitterRound.value = 0
   prevRedditRound.value = 0
   startError.value = null
@@ -421,10 +450,9 @@ const doStartSimulation = async () => {
       phase.value = 1
       runStatus.value = res.data
       
-      startStatusPolling()
-      startDetailPolling()
+      startPolling()
     } else {
-      startError.value = res.error || '启动失败'
+      startError.value = res.error || t('step3.startFailed', { error: t('common.unknownError') })
       addLog(t('log.startFailed', { error: res.error || t('common.unknownError') }))
       emit('update-status', 'error')
     }
@@ -462,27 +490,67 @@ const handleStopSimulation = async () => {
   }
 }
 
-// 轮询状态
-let statusTimer = null
-let detailTimer = null
-
-const startStatusPolling = () => {
-  statusTimer = setInterval(fetchRunStatus, 2000)
+// Polling：每次请求完成后再用 setTimeout 安排下一次，保证同一轮询不会重叠；unmount 时全部停止
+// fn may return a delay in ms to override the interval for the next tick (0 = run again immediately).
+const createPoller = (fn, intervalMs) => {
+  let timer = null
+  let active = false
+  let inFlight = false
+  const schedule = (delay) => {
+    clearTimeout(timer)
+    timer = setTimeout(tick, delay)
+  }
+  const tick = async () => {
+    timer = null
+    if (!active) return
+    inFlight = true
+    let delay = intervalMs
+    try {
+      const override = await fn()
+      if (typeof override === 'number') delay = override
+    } finally {
+      inFlight = false
+      if (active) schedule(delay)
+    }
+  }
+  return {
+    start() {
+      if (active) return
+      active = true
+      schedule(0)
+    },
+    stop() {
+      active = false
+      clearTimeout(timer)
+      timer = null
+    },
+    // Run the next tick now. While a request is in flight that request reschedules itself.
+    poke() {
+      if (active && !inFlight) schedule(0)
+    }
+  }
 }
 
-const startDetailPolling = () => {
-  detailTimer = setInterval(fetchRunStatusDetail, 3000)
+const statusPoller = createPoller(() => fetchRunStatus(), STATUS_INTERVAL_MS)
+const detailPoller = createPoller(() => fetchRunStatusDetail(), DETAIL_INTERVAL_MS)
+let disposed = false
+
+const startPolling = () => {
+  statusPoller.start()
+  detailPoller.start()
 }
 
 const stopPolling = () => {
-  if (statusTimer) {
-    clearInterval(statusTimer)
-    statusTimer = null
-  }
-  if (detailTimer) {
-    clearInterval(detailTimer)
-    detailTimer = null
-  }
+  statusPoller.stop()
+  detailPoller.stop()
+}
+
+// Terminal state: stop the status poll now; the detail poll drains the remaining pages, then stops itself.
+const finishRun = (status) => {
+  phase.value = 2
+  statusPoller.stop()
+  detailPoller.poke()
+  emit('update-status', status)
 }
 
 // 追踪各平台的上一次轮次，用于检测变化并输出日志
@@ -490,7 +558,7 @@ const prevTwitterRound = ref(0)
 const prevRedditRound = ref(0)
 
 const fetchRunStatus = async () => {
-  if (!props.simulationId) return
+  if (disposed || !props.simulationId) return
   
   try {
     const res = await getRunStatus(props.simulationId)
@@ -519,14 +587,10 @@ const fetchRunStatus = async () => {
       // terminal state after the Zep ingestion barrier has completed.
       if (isFailed) {
         addLog(t('log.simFailed') + (data.error ? `: ${data.error}` : ''))
-        phase.value = 2
-        stopPolling()
-        emit('update-status', 'error')
+        finishRun('error')
       } else if (isCompleted) {
         addLog(t('log.simCompleted'))
-        phase.value = 2
-        stopPolling()
-        emit('update-status', 'completed')
+        finishRun('completed')
       }
     }
   } catch (err) {
@@ -558,38 +622,72 @@ const checkPlatformsCompleted = (data) => {
   return true
 }
 
+const resetActionFeed = () => {
+  allActions.value = []
+  seenCounts.value = { total: 0, twitter: 0, reddit: 0 }
+  droppedActionsCount.value = 0
+  nextCursor = 0
+}
+
+// Append one cursor page (ascending, never overlapping the previous page) and trim the rendered window.
+const appendActions = (actions) => {
+  if (actions.length === 0) return
+  const counts = { ...seenCounts.value }
+  for (const action of actions) {
+    counts.total++
+    if (action.platform === 'twitter') counts.twitter++
+    else if (action.platform === 'reddit') counts.reddit++
+  }
+  seenCounts.value = counts
+  const merged = allActions.value.concat(actions)
+  const overflow = merged.length - MAX_RENDERED_ACTIONS
+  allActions.value = overflow > 0 ? merged.slice(overflow) : merged
+  if (overflow > 0) droppedActionsCount.value += overflow
+  // 不自动滚动，让用户自由查看时间轴；新动作会在底部追加
+}
+
+// Apply one detail response. Returns whether another page should be fetched right away.
+const applyDetailPage = (data) => {
+  if (data.llm_models) llmModels.value = data.llm_models
+  const epoch = data.cursor_epoch ?? null
+  if ((cursorEpoch !== null && epoch !== cursorEpoch) || data.cursor_reset === true) {
+    // The backend rebuilt its action index (restart or log rotation): start again from cursor 0.
+    cursorEpoch = epoch
+    resetActionFeed()
+    addLog(t('log.actionFeedReset'))
+    return { hasMore: true }
+  }
+  cursorEpoch = epoch
+  appendActions(data.actions || [])
+  if (typeof data.next_cursor === 'number') nextCursor = data.next_cursor
+  return { hasMore: data.has_more === true }
+}
+
 const fetchRunStatusDetail = async () => {
-  if (!props.simulationId) return
+  if (disposed || !props.simulationId) return
+  // When the run already ended before this request, this tick drains the remaining pages and stops the poller.
+  const flushing = phase.value === 2
+  let page = null
   
   try {
-    const res = await getRunStatusDetail(props.simulationId)
+    const res = await getRunDetailSince(props.simulationId, nextCursor, DETAIL_PAGE_LIMIT)
     
     if (res.success && res.data) {
-      // 使用 all_actions 获取完整的动作列表
-      const serverActions = res.data.all_actions || []
-      
-      // 增量添加新动作（去重）
-      let newActionsAdded = 0
-      serverActions.forEach(action => {
-        // 生成唯一ID
-        const actionId = action.id || `${action.timestamp}-${action.platform}-${action.agent_id}-${action.action_type}`
-        
-        if (!actionIds.value.has(actionId)) {
-          actionIds.value.add(actionId)
-          allActions.value.push({
-            ...action,
-            _uniqueId: actionId
-          })
-          newActionsAdded++
-        }
-      })
-      
-      // 不自动滚动，让用户自由查看时间轴
-      // 新动作会在底部追加
+      page = applyDetailPage(res.data)
     }
   } catch (err) {
     console.warn('获取详细状态失败:', err)
   }
+  
+  if (disposed) return
+  if (page?.hasMore) return 0
+  if (flushing) {
+    detailPoller.stop()
+    return
+  }
+  // The run ended while this request was in flight: run the final drain now instead of after the interval.
+  if (phase.value === 2) return 0
+  return DETAIL_INTERVAL_MS
 }
 
 // Helpers
@@ -635,11 +733,8 @@ const truncateContent = (content, maxLength = 100) => {
 
 const formatActionTime = (timestamp) => {
   if (!timestamp) return ''
-  try {
-    return new Date(timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
-  } catch {
-    return ''
-  }
+  const date = new Date(timestamp)
+  return Number.isNaN(date.getTime()) ? '' : timeFormatter.value.format(date)
 }
 
 const handleNextStep = async () => {
@@ -688,14 +783,32 @@ watch(() => props.systemLogs?.length, () => {
   })
 })
 
-onMounted(() => {
-  addLog(t('log.step3Init'))
-  if (props.simulationId) {
-    doStartSimulation()
+// Re-opening or refreshing this page must not silently restart (and re-bill) a run that already
+// exists: show the existing run and only start when nothing has run yet.
+const hasExistingRun = async () => {
+  try {
+    const res = await getRunStatus(props.simulationId)
+    const data = res?.data || {}
+    return res?.success && (data.current_round || 0) > 0 &&
+      ['running', 'completed', 'stopped', 'failed'].includes(data.runner_status)
+  } catch {
+    return false
   }
+}
+
+onMounted(async () => {
+  addLog(t('log.step3Init'))
+  if (!props.simulationId) return
+  if (await hasExistingRun()) {
+    phase.value = 1
+    startPolling()
+    return
+  }
+  doStartSimulation()
 })
 
 onUnmounted(() => {
+  disposed = true
   stopPolling()
 })
 </script>
@@ -706,8 +819,9 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   background: #FFFFFF;
-  font-family: 'Space Grotesk', 'Noto Sans SC', system-ui, sans-serif;
+  font-family: var(--mf-font-sans);
   overflow: hidden;
+  container-type: inline-size;
 }
 
 /* --- Control Bar --- */
@@ -920,7 +1034,21 @@ onUnmounted(() => {
   border-bottom: 1px solid #EAEAEA;
   z-index: 5;
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: center;
+  gap: var(--mf-space-2);
+}
+
+/* Shown once older actions were dropped from the rendered window */
+.timeline-note {
+  font-size: var(--mf-text-xs);
+  line-height: 1.6;
+  color: var(--mf-gray-500);
+  padding: var(--mf-space-1) var(--mf-space-3);
+  border: 1px dashed var(--mf-gray-400);
+  border-radius: var(--mf-radius-pill);
+  text-align: center;
 }
 
 .timeline-stats {
@@ -1161,10 +1289,21 @@ onUnmounted(() => {
 .card-footer {
   margin-top: 12px;
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: var(--mf-space-2);
   font-size: 10px;
   color: #BBB;
   font-family: 'JetBrains Mono', monospace;
+}
+
+.footer-model {
+  min-width: 0;
+  margin-right: auto;
+}
+
+.card-footer .time-tag {
+  white-space: nowrap;
 }
 
 /* Waiting State */
@@ -1196,19 +1335,14 @@ onUnmounted(() => {
   100% { transform: scale(2.5); opacity: 0; border-color: #EAEAEA; }
 }
 
-/* Animation */
-.timeline-item-enter-active,
-.timeline-item-leave-active {
+/* Animation: new cards slide in; cards dropped from the window leave instantly (no leave transition) */
+.timeline-item-enter-active {
   transition: all 0.4s cubic-bezier(0.165, 0.84, 0.44, 1);
 }
 
 .timeline-item-enter-from {
   opacity: 0;
   transform: translateY(20px);
-}
-
-.timeline-item-leave-to {
-  opacity: 0;
 }
 
 /* Logs */
@@ -1253,6 +1387,38 @@ onUnmounted(() => {
 .log-time { color: #555; min-width: 75px; }
 .log-msg { color: #BBB; word-break: break-all; }
 .mono { font-family: 'JetBrains Mono', monospace; }
+
+/* Narrow panel (phone, or a slim split pane): wrap the control bar and stack the timeline in one column */
+@container (max-width: 640px) {
+  .control-bar {
+    height: auto;
+    min-height: 64px;
+    flex-wrap: wrap;
+    gap: var(--mf-space-3);
+    padding: var(--mf-space-3) var(--mf-space-4);
+  }
+
+  .action-controls {
+    margin-left: auto;
+  }
+
+  .timeline-axis,
+  .timeline-marker {
+    left: var(--mf-space-6);
+  }
+
+  .timeline-item.twitter,
+  .timeline-item.reddit {
+    justify-content: flex-start;
+    padding: 0 var(--mf-space-4) 0 calc(var(--mf-space-6) + var(--mf-space-4));
+  }
+
+  .timeline-item.twitter .timeline-card,
+  .timeline-item.reddit .timeline-card {
+    width: 100%;
+    margin: 0;
+  }
+}
 
 /* Loading spinner for button */
 .loading-spinner-small {

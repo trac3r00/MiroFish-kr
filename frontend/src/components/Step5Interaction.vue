@@ -8,8 +8,9 @@
           <!-- Report Header -->
           <div class="report-header-block">
             <div class="report-meta">
-              <span class="report-tag">Prediction Report</span>
-              <span class="report-id">ID: {{ reportId || 'REF-2024-X92' }}</span>
+              <span class="report-tag">{{ $t('step4.reportTag') }}</span>
+              <span class="report-id">{{ $t('step4.reportIdLabel', { id: reportId || 'REF-2024-X92' }) }}</span>
+              <ModelBadge v-if="outlineModel" class="report-model" :model="outlineModel.model" :profile-label="profileLabelOf(outlineModel.profileId)" />
             </div>
             <h1 class="main-title">{{ reportOutline.title }}</h1>
             <p class="sub-title">{{ reportOutline.summary }}</p>
@@ -31,6 +32,7 @@
               <div class="section-header-row" @click="toggleSectionCollapse(idx)" :class="{ 'clickable': isSectionCompleted(idx + 1) }">
                 <span class="section-number">{{ String(idx + 1).padStart(2, '0') }}</span>
                 <h3 class="section-title">{{ section.title }}</h3>
+                <ModelBadge v-if="sectionModels[idx + 1]" class="section-model" :model="sectionModels[idx + 1].model" :profile-label="profileLabelOf(sectionModels[idx + 1].profileId)" />
                 <svg 
                   v-if="isSectionCompleted(idx + 1)" 
                   class="collapse-icon" 
@@ -72,7 +74,7 @@
             <div class="waiting-ring"></div>
             <div class="waiting-ring"></div>
           </div>
-          <span class="waiting-text">Waiting for Report Agent...</span>
+          <span class="waiting-text">{{ $t('step4.waitingForReportAgent') }}</span>
         </div>
       </div>
 
@@ -266,8 +268,9 @@
               <div class="message-content">
                 <div class="message-header">
                   <span class="sender-name">
-                    {{ msg.role === 'user' ? 'You' : (chatTarget === 'report_agent' ? 'Report Agent' : (selectedAgent?.username || 'Agent')) }}
+                    {{ msg.role === 'user' ? $t('step5.senderYou') : (chatTarget === 'report_agent' ? $t('step5.senderReportAgent') : (selectedAgent?.username || $t('step5.senderAgent'))) }}
                   </span>
+                  <ModelBadge v-if="msg.model || msg.profileId" class="message-model" :model="msg.model" :profile-label="msg.profileLabel || profileLabelOf(msg.profileId)" :stage="msg.stage" />
                   <span class="message-time">{{ formatTime(msg.timestamp) }}</span>
                 </div>
                 <div class="message-text" v-html="renderMarkdown(msg.content)"></div>
@@ -391,6 +394,7 @@
                     <span class="result-name">{{ result.agent_name }}</span>
                     <span class="result-role">{{ result.profession || $t('step2.unknownProfession') }}</span>
                   </div>
+                  <ModelBadge v-if="result.model || result.profileId" class="result-model" :model="result.model" :profile-label="result.profileLabel || profileLabelOf(result.profileId)" />
                 </div>
                 <div class="result-question">
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
@@ -414,9 +418,11 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { chatWithReport, getReport, getAgentLog } from '../api/report'
-import { interviewAgents, getSimulationProfilesRealtime } from '../api/simulation'
+import { interviewAgents, getSimulationProfilesRealtime, getSimulationConfig } from '../api/simulation'
+import { getLlmStatus } from '../api/llm'
+import ModelBadge from './ModelBadge.vue'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 const props = defineProps({
   reportId: String,
@@ -437,7 +443,7 @@ const showToolsDetail = ref(true)
 // Chat State
 const chatInput = ref('')
 const chatHistory = ref([])
-const chatHistoryCache = ref({}) // 缓存所有对话记录: { 'report_agent': [], 'agent_0': [], 'agent_1': [], ... }
+const chatHistoryCache = ref({}) // per target: { report_agent: [], agent_0: [], agent_1: [], ... }
 const isSending = ref(false)
 const chatMessages = ref(null)
 const chatInputRef = ref(null)
@@ -451,6 +457,11 @@ const isSurveying = ref(false)
 // Report Data
 const reportOutline = ref(null)
 const generatedSections = ref({})
+const sectionModels = ref({})
+const outlineModel = ref(null)
+const llmProfiles = ref({})
+const agentLlmModels = ref({})
+const agentProfileIds = ref({})
 const collapsedSections = ref(new Set())
 const currentSectionIndex = ref(null)
 const profiles = ref([])
@@ -487,7 +498,6 @@ const selectChatTarget = (target) => {
   }
 }
 
-// 保存当前对话记录到缓存
 const saveChatHistory = () => {
   if (chatHistory.value.length === 0) return
   
@@ -499,7 +509,6 @@ const saveChatHistory = () => {
 }
 
 const selectReportAgentChat = () => {
-  // 保存当前对话记录
   saveChatHistory()
   
   activeTab.value = 'chat'
@@ -508,7 +517,6 @@ const selectReportAgentChat = () => {
   selectedAgentIndex.value = null
   showAgentDropdown.value = false
   
-  // 恢复 Report Agent 的对话记录
   chatHistory.value = chatHistoryCache.value['report_agent'] || []
 }
 
@@ -528,7 +536,6 @@ const toggleAgentDropdown = () => {
 }
 
 const selectAgent = (agent, idx) => {
-  // 保存当前对话记录
   saveChatHistory()
   
   selectedAgent.value = agent
@@ -536,22 +543,84 @@ const selectAgent = (agent, idx) => {
   chatTarget.value = 'agent'
   showAgentDropdown.value = false
   
-  // 恢复该 Agent 的对话记录
   chatHistory.value = chatHistoryCache.value[`agent_${idx}`] || []
   addLog(t('log.selectChatTarget', { name: agent.username }))
 }
 
+const timeFormatter = computed(() => new Intl.DateTimeFormat(locale.value, {
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23'
+}))
+
 const formatTime = (timestamp) => {
   if (!timestamp) return ''
+  const date = new Date(timestamp)
+  return Number.isNaN(date.getTime()) ? '' : timeFormatter.value.format(date)
+}
+
+// Agent-log entries and chat replies carry llm = {stage, model, profile_id, usage}
+const modelInfo = (entry) => {
+  const llm = entry?.details?.llm ?? entry?.llm ?? null
+  const model = llm?.model ?? entry?.model ?? null
+  const profileId = llm?.profile_id ?? entry?.profile_id ?? null
+  return (model || profileId) ? { model, profileId, stage: llm?.stage ?? null } : null
+}
+
+const profileLabelOf = (profileId) => llmProfiles.value[profileId]?.label ?? profileId ?? ''
+
+// Simulated agents answer with their pool profile from the simulation config
+const agentModelInfo = (agentIdx) => {
+  const profileId = agentProfileIds.value[agentIdx]
+  if (!profileId) return null
+  const entry = agentLlmModels.value[profileId]
+  return { model: entry?.model ?? null, profileId, profileLabel: entry?.label ?? profileLabelOf(profileId), stage: null }
+}
+
+const replyModelInfo = (agentResult, agentIdx) => {
+  const fromReply = modelInfo(agentResult)
+  if (fromReply) return { ...fromReply, profileLabel: profileLabelOf(fromReply.profileId) }
+  return agentModelInfo(agentIdx)
+}
+
+const loadLlmProfiles = async () => {
   try {
-    return new Date(timestamp).toLocaleTimeString('en-US', { 
-      hour12: false, 
-      hour: '2-digit', 
-      minute: '2-digit'
-    })
-  } catch {
-    return ''
+    const res = await getLlmStatus()
+    if (res.success && res.data) {
+      llmProfiles.value = Object.fromEntries((res.data.profiles || []).map(p => [p.id, p]))
+    }
+  } catch (err) {
+    console.warn('Failed to load LLM status:', err)
   }
+}
+
+const loadAgentModels = async () => {
+  if (!props.simulationId) return
+  try {
+    const res = await getSimulationConfig(props.simulationId)
+    if (res.success && res.data) {
+      agentLlmModels.value = res.data.llm_models || {}
+      agentProfileIds.value = Object.fromEntries(
+        (res.data.agent_configs || []).map(agent => [agent.agent_id, agent.llm_profile])
+      )
+    }
+  } catch (err) {
+    console.warn('Failed to load simulation config:', err)
+  }
+}
+
+// Interview results are keyed "<platform>_<agentIdx>"; Reddit is preferred, then Twitter
+const pickAgentResult = (resultsDict, agentIdx, fallbackToAny = false) => {
+  if (Array.isArray(resultsDict)) {
+    return resultsDict.find(r => r.agent_id === agentIdx) || (fallbackToAny ? resultsDict[0] : null) || null
+  }
+  if (resultsDict && typeof resultsDict === 'object') {
+    return resultsDict[`reddit_${agentIdx}`]
+      || resultsDict[`twitter_${agentIdx}`]
+      || (fallbackToAny ? Object.values(resultsDict)[0] : null)
+      || null
+  }
+  return null
 }
 
 const renderMarkdown = (content) => {
@@ -566,7 +635,7 @@ const renderMarkdown = (content) => {
   html = html.replace(/^# (.+)$/gm, '<h2 class="md-h2">$1</h2>')
   html = html.replace(/^> (.+)$/gm, '<blockquote class="md-quote">$1</blockquote>')
   
-  // 处理列表 - 支持子列表
+  // Lists, nesting level from indentation
   html = html.replace(/^(\s*)- (.+)$/gm, (match, indent, text) => {
     const level = Math.floor(indent.length / 2)
     return `<li class="md-li" data-level="${level}">${text}</li>`
@@ -576,17 +645,17 @@ const renderMarkdown = (content) => {
     return `<li class="md-oli" data-level="${level}">${text}</li>`
   })
   
-  // 包装无序列表
+  // Wrap unordered lists
   html = html.replace(/(<li class="md-li"[^>]*>.*?<\/li>\s*)+/g, '<ul class="md-ul">$&</ul>')
-  // 包装有序列表
+  // Wrap ordered lists
   html = html.replace(/(<li class="md-oli"[^>]*>.*?<\/li>\s*)+/g, '<ol class="md-ol">$&</ol>')
   
-  // 清理列表项之间的所有空白
+  // Remove whitespace between list items
   html = html.replace(/<\/li>\s+<li/g, '</li><li')
-  // 清理列表开始标签后的空白
+  // Remove whitespace after list open tags
   html = html.replace(/<ul class="md-ul">\s+/g, '<ul class="md-ul">')
   html = html.replace(/<ol class="md-ol">\s+/g, '<ol class="md-ol">')
-  // 清理列表结束标签前的空白
+  // Remove whitespace before list close tags
   html = html.replace(/\s+<\/ul>/g, '</ul>')
   html = html.replace(/\s+<\/ol>/g, '</ol>')
   
@@ -602,17 +671,17 @@ const renderMarkdown = (content) => {
   html = html.replace(/(<\/h[2-5]>)<\/p>/g, '$1')
   html = html.replace(/<p class="md-p">(<ul|<ol|<blockquote|<pre|<hr)/g, '$1')
   html = html.replace(/(<\/ul>|<\/ol>|<\/blockquote>|<\/pre>)<\/p>/g, '$1')
-  // 清理块级元素前后的 <br> 标签
+  // Remove <br> around block elements
   html = html.replace(/<br>\s*(<ul|<ol|<blockquote)/g, '$1')
   html = html.replace(/(<\/ul>|<\/ol>|<\/blockquote>)\s*<br>/g, '$1')
-  // 清理 <p><br> 紧跟块级元素的情况（多余空行导致）
+  // Remove "<p><br>" directly before a block element
   html = html.replace(/<p class="md-p">(<br>\s*)+(<ul|<ol|<blockquote|<pre|<hr)/g, '$2')
-  // 清理连续的 <br> 标签
+  // Collapse consecutive <br>
   html = html.replace(/(<br>\s*){2,}/g, '<br>')
-  // 清理块级元素后紧跟的段落开始标签前的 <br>
+  // Remove <br> between a closing block and the next paragraph
   html = html.replace(/(<\/ol>|<\/ul>|<\/blockquote>)<br>(<p|<div)/g, '$1$2')
 
-  // 修复非连续有序列表的编号：当单项 <ol> 被段落内容隔开时，保持编号递增
+  // Keep numbering continuous across single-item <ol> blocks separated by paragraphs
   const tokens = html.split(/(<ol class="md-ol">(?:<li class="md-oli"[^>]*>[\s\S]*?<\/li>)+<\/ol>)/g)
   let olCounter = 0
   let inSequence = false
@@ -674,7 +743,6 @@ const sendMessage = async () => {
   } finally {
     isSending.value = false
     scrollToBottom()
-    // 自动保存对话记录到缓存
     saveChatHistory()
   }
 }
@@ -698,9 +766,13 @@ const sendToReportAgent = async (message) => {
   })
   
   if (res.success && res.data) {
+    const info = modelInfo(res.data)
     chatHistory.value.push({
       role: 'assistant',
       content: res.data.response || res.data.answer || t('step5.noResponse'),
+      model: info?.model ?? null,
+      profileId: info?.profileId ?? null,
+      stage: info?.stage ?? null,
       timestamp: new Date().toISOString()
     })
     addLog(t('log.reportAgentReplied'))
@@ -716,15 +788,15 @@ const sendToAgent = async (message) => {
   
   addLog(t('log.sendToAgent', { name: selectedAgent.value.username, message: message.substring(0, 50) }))
   
-  // Build prompt with chat history
+  // Prompt wording is English by design; the backend appends the output-language instruction
   let prompt = message
   if (chatHistory.value.length > 1) {
     const historyContext = chatHistory.value
       .slice(0, -1)
       .slice(-6)
-      .map(msg => `${msg.role === 'user' ? '提问者' : '你'}：${msg.content}`)
+      .map(msg => `${msg.role === 'user' ? 'Interviewer' : 'You'}: ${msg.content}`)
       .join('\n')
-    prompt = `以下是我们之前的对话：\n${historyContext}\n\n现在我的新问题是：${message}`
+    prompt = `Earlier conversation:\n${historyContext}\n\nNew question: ${message}`
   }
   
   const res = await interviewAgents({
@@ -736,32 +808,20 @@ const sendToAgent = async (message) => {
   })
   
   if (res.success && res.data) {
-    // 正确的数据路径: res.data.result.results 是一个对象字典
-    // 格式: {"twitter_0": {...}, "reddit_0": {...}} 或单平台 {"reddit_0": {...}}
     const resultData = res.data.result || res.data
     const resultsDict = resultData.results || resultData
-    
-    // 将对象字典转换为数组，优先获取 reddit 平台的回复
-    let responseContent = null
-    const agentId = selectedAgentIndex.value
-    
-    if (typeof resultsDict === 'object' && !Array.isArray(resultsDict)) {
-      // 优先使用 reddit 平台回复，其次 twitter
-      const redditKey = `reddit_${agentId}`
-      const twitterKey = `twitter_${agentId}`
-      const agentResult = resultsDict[redditKey] || resultsDict[twitterKey] || Object.values(resultsDict)[0]
-      if (agentResult) {
-        responseContent = agentResult.response || agentResult.answer
-      }
-    } else if (Array.isArray(resultsDict) && resultsDict.length > 0) {
-      // 兼容数组格式
-      responseContent = resultsDict[0].response || resultsDict[0].answer
-    }
+    const agentResult = pickAgentResult(resultsDict, selectedAgentIndex.value, true)
+    const responseContent = agentResult?.response || agentResult?.answer || null
     
     if (responseContent) {
+      const info = replyModelInfo(agentResult, selectedAgentIndex.value)
       chatHistory.value.push({
         role: 'assistant',
         content: responseContent,
+        model: info?.model ?? null,
+        profileId: info?.profileId ?? null,
+        profileLabel: info?.profileLabel ?? '',
+        stage: info?.stage ?? null,
         timestamp: new Date().toISOString()
       })
       addLog(t('log.agentReplied', { name: selectedAgent.value.username }))
@@ -820,46 +880,25 @@ const submitSurvey = async () => {
     })
     
     if (res.success && res.data) {
-      // 正确的数据路径: res.data.result.results 是一个对象字典
-      // 格式: {"twitter_0": {...}, "reddit_0": {...}, "twitter_1": {...}, ...}
       const resultData = res.data.result || res.data
       const resultsDict = resultData.results || resultData
       
-      // 将对象字典转换为数组格式
-      const surveyResultsList = []
-      
-      for (const interview of interviews) {
+      surveyResults.value = interviews.map(interview => {
         const agentIdx = interview.agent_id
         const agent = profiles.value[agentIdx]
-        
-        // 优先使用 reddit 平台回复，其次 twitter
-        let responseContent = t('step5.noResponse')
-
-        if (typeof resultsDict === 'object' && !Array.isArray(resultsDict)) {
-          const redditKey = `reddit_${agentIdx}`
-          const twitterKey = `twitter_${agentIdx}`
-          const agentResult = resultsDict[redditKey] || resultsDict[twitterKey]
-          if (agentResult) {
-            responseContent = agentResult.response || agentResult.answer || t('step5.noResponse')
-          }
-        } else if (Array.isArray(resultsDict)) {
-          // 兼容数组格式
-          const matchedResult = resultsDict.find(r => r.agent_id === agentIdx)
-          if (matchedResult) {
-            responseContent = matchedResult.response || matchedResult.answer || t('step5.noResponse')
-          }
-        }
-        
-        surveyResultsList.push({
+        const agentResult = pickAgentResult(resultsDict, agentIdx)
+        const info = replyModelInfo(agentResult, agentIdx)
+        return {
           agent_id: agentIdx,
-          agent_name: agent?.username || `Agent ${agentIdx}`,
+          agent_name: agent?.username || t('step5.agentFallback', { n: agentIdx }),
           profession: agent?.profession,
           question: surveyQuestion.value.trim(),
-          answer: responseContent
-        })
-      }
-      
-      surveyResults.value = surveyResultsList
+          answer: agentResult?.response || agentResult?.answer || t('step5.noResponse'),
+          model: info?.model ?? null,
+          profileId: info?.profileId ?? null,
+          profileLabel: info?.profileLabel ?? ''
+        }
+      })
       addLog(t('log.receivedReplies', { count: surveyResults.value.length }))
     } else {
       throw new Error(res.error || t('step5.requestFailed'))
@@ -898,12 +937,19 @@ const loadAgentLogs = async () => {
       const logs = res.data.logs || []
       
       logs.forEach(log => {
-        if (log.action === 'planning_complete' && log.details?.outline) {
-          reportOutline.value = log.details.outline
+        const info = modelInfo(log)
+        if (log.action === 'planning_complete') {
+          if (log.details?.outline) reportOutline.value = log.details.outline
+          if (info) outlineModel.value = info
         }
         
-        if (log.action === 'section_complete' && log.section_index < 100 && log.details?.content) {
-          generatedSections.value[log.section_index] = log.details.content
+        if (log.action === 'llm_response' && info && log.section_index && log.section_index < 100) {
+          sectionModels.value[log.section_index] = info
+        }
+        
+        if (log.action === 'section_complete' && log.section_index < 100) {
+          if (info) sectionModels.value[log.section_index] = info
+          if (log.details?.content) generatedSections.value[log.section_index] = log.details.content
         }
       })
       
@@ -939,6 +985,7 @@ const handleClickOutside = (e) => {
 // Lifecycle
 onMounted(() => {
   addLog(t('log.step5Init'))
+  loadLlmProfiles()
   loadReportData()
   loadProfiles()
   document.addEventListener('click', handleClickOutside)
@@ -957,6 +1004,7 @@ watch(() => props.reportId, (newId) => {
 watch(() => props.simulationId, (newId) => {
   if (newId) {
     loadProfiles()
+    loadAgentModels()
   }
 }, { immediate: true })
 </script>
@@ -983,7 +1031,7 @@ watch(() => props.simulationId, (newId) => {
   overflow: hidden;
 }
 
-/* Left Panel - Report Style (与 Step4Report.vue 完全一致) */
+/* Left Panel - Report Style (identical to Step4Report.vue) */
 .left-panel.report-style {
   width: 45%;
   min-width: 450px;
@@ -2031,7 +2079,7 @@ watch(() => props.simulationId, (newId) => {
   margin-bottom: 0;
 }
 
-/* 修复有序列表编号 - 使用 CSS 计数器让多个 ol 连续编号 */
+/* Ordered-list numbering: CSS counters keep consecutive <ol> blocks numbered continuously */
 .message-text {
   counter-reset: list-counter;
 }
@@ -2057,7 +2105,7 @@ watch(() => props.simulationId, (newId) => {
   flex-shrink: 0;
 }
 
-/* 无序列表样式 */
+/* Unordered list */
 .message-text :deep(.md-ul) {
   padding-left: 20px;
   margin: 8px 0;
@@ -2536,7 +2584,7 @@ watch(() => props.simulationId, (newId) => {
   margin: 6px 0;
 }
 
-/* 聊天/问卷区域的引用样式 */
+/* Blockquotes in chat and survey areas */
 .chat-messages :deep(.md-quote),
 .result-answer :deep(.md-quote) {
   margin: 12px 0;
@@ -2580,5 +2628,32 @@ watch(() => props.simulationId, (newId) => {
 /* English locale: smaller report title */
 html[lang="en"] .report-header-block .main-title {
   font-size: 28px;
+}
+/* Model badges */
+.report-meta .report-model {
+  margin-left: auto;
+}
+
+.section-header-row .section-model {
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.message-header .message-model {
+  flex-shrink: 0;
+}
+
+.result-header .result-model {
+  margin-left: auto;
+}
+@media (max-width: 640px) {
+  .section-header-row {
+    flex-wrap: wrap;
+  }
+
+  .section-header-row .section-model {
+    flex-basis: 100%;
+    max-width: max-content;
+  }
 }
 </style>

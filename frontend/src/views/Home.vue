@@ -6,7 +6,7 @@
       <div class="nav-links">
         <LanguageSwitcher />
         <a href="https://github.com/666ghj/MiroFish" target="_blank" class="github-link">
-          {{ $t('nav.visitGithub') }} <span class="arrow">↗</span>
+          <span class="github-link-label">{{ $t('nav.visitGithub') }}</span> <span class="arrow">↗</span>
         </a>
       </div>
     </nav>
@@ -44,7 +44,7 @@
         <div class="hero-right">
           <!-- Logo 区域 -->
           <div class="logo-container">
-            <img src="../assets/logo/MiroFish_logo_left.jpeg" alt="MiroFish Logo" class="hero-logo" />
+            <img src="../assets/logo/MiroFish_logo_left.webp" alt="MiroFish Logo" class="hero-logo" />
           </div>
           
           <button class="scroll-down-btn" @click="scrollToBottom">
@@ -361,6 +361,10 @@ const startSimulation = () => {
 }
 
 .github-link {
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--white);
   text-decoration: none;
   font-family: var(--font-mono);
@@ -448,6 +452,11 @@ const startSimulation = () => {
   margin-bottom: 50px;
   font-weight: 400;
   text-align: justify;
+}
+
+/* Korean keeps whole words (keep-all), so justify opens wide gaps between words */
+:lang(ko) .hero-desc {
+  text-align: left;
 }
 
 .hero-desc p {

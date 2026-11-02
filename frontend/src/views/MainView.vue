@@ -24,7 +24,7 @@
         <LanguageSwitcher />
         <div class="step-divider"></div>
         <div class="workflow-step">
-          <span class="step-num">Step {{ currentStep }}/5</span>
+          <span class="step-num">{{ $t('main.stepNumber', { current: currentStep, total: 5 }) }}</span>
           <span class="step-name">{{ $tm('main.stepNames')[currentStep - 1] }}</span>
         </div>
         <div class="step-divider"></div>
@@ -89,7 +89,7 @@ import LanguageSwitcher from '../components/LanguageSwitcher.vue'
 
 const route = useRoute()
 const router = useRouter()
-const { t, tm } = useI18n()
+const { t, tm, locale } = useI18n()
 
 // Layout State
 const viewMode = ref('split') // graph | split | workbench
@@ -135,16 +135,25 @@ const statusClass = computed(() => {
 })
 
 const statusText = computed(() => {
-  if (error.value) return 'Error'
-  if (currentPhase.value >= 2) return 'Ready'
-  if (currentPhase.value === 1) return 'Building Graph'
-  if (currentPhase.value === 0) return 'Generating Ontology'
-  return 'Initializing'
+  if (error.value) return t('common.error')
+  if (currentPhase.value >= 2) return t('common.ready')
+  if (currentPhase.value === 1) return t('main.statusBuildingGraph')
+  if (currentPhase.value === 0) return t('main.statusGeneratingOntology')
+  return t('main.statusInitializing')
 })
 
 // --- Helpers ---
+// Log clock in the UI locale, always 24h so entries line up
+const logTimeFormatter = computed(() => new Intl.DateTimeFormat(locale.value, {
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23'
+}))
+
 const addLog = (msg) => {
-  const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '.' + new Date().getMilliseconds().toString().padStart(3, '0')
+  const now = new Date()
+  const time = `${logTimeFormatter.value.format(now)}.${now.getMilliseconds().toString().padStart(3, '0')}`
   systemLogs.value.push({ time, msg })
   // Keep last 100 logs
   if (systemLogs.value.length > 100) {
@@ -183,7 +192,7 @@ const handleGoBack = () => {
 // --- Data Logic ---
 
 const initProject = async () => {
-  addLog('Project view initialized.')
+  addLog(t('log.projectViewInit'))
   if (currentProjectId.value === 'new') {
     await handleNewProject()
   } else {
@@ -195,15 +204,15 @@ const handleNewProject = async () => {
   const pending = getPendingUpload()
   if (!pending.isPending || pending.files.length === 0) {
     error.value = 'No pending files found.'
-    addLog('Error: No pending files found for new project.')
+    addLog(t('log.noPendingFiles'))
     return
   }
   
   try {
     loading.value = true
     currentPhase.value = 0
-    ontologyProgress.value = { message: 'Uploading and analyzing docs...' }
-    addLog('Starting ontology generation: Uploading files...')
+    ontologyProgress.value = { message: t('step1.analyzingDocs') }
+    addLog(t('log.ontologyUploadStart'))
     
     const formData = new FormData()
     pending.files.forEach(f => formData.append('files', f))
@@ -217,15 +226,15 @@ const handleNewProject = async () => {
       
       router.replace({ name: 'Process', params: { projectId: res.data.project_id } })
       ontologyProgress.value = null
-      addLog(`Ontology generated successfully for project ${res.data.project_id}`)
+      addLog(t('log.ontologyGenerated', { id: res.data.project_id }))
       await startBuildGraph()
     } else {
       error.value = res.error || 'Ontology generation failed'
-      addLog(`Error generating ontology: ${error.value}`)
+      addLog(t('log.ontologyGenerateFailed', { error: error.value }))
     }
   } catch (err) {
     error.value = err.message
-    addLog(`Exception in handleNewProject: ${err.message}`)
+    addLog(t('log.ontologyGenerateFailed', { error: err.message }))
   } finally {
     loading.value = false
   }
@@ -234,12 +243,12 @@ const handleNewProject = async () => {
 const loadProject = async () => {
   try {
     loading.value = true
-    addLog(`Loading project ${currentProjectId.value}...`)
+    addLog(t('log.loadingProject', { id: currentProjectId.value }))
     const res = await getProject(currentProjectId.value)
     if (res.success) {
       projectData.value = res.data
       updatePhaseByStatus(res.data.status)
-      addLog(`Project loaded. Status: ${res.data.status}`)
+      addLog(t('log.projectLoaded', { status: res.data.status }))
       
       if (res.data.status === 'ontology_generated' && !res.data.graph_id) {
         await startBuildGraph()
@@ -252,11 +261,11 @@ const loadProject = async () => {
       }
     } else {
       error.value = res.error
-      addLog(`Error loading project: ${res.error}`)
+      addLog(t('log.projectLoadFailed', { error: res.error }))
     }
   } catch (err) {
     error.value = err.message
-    addLog(`Exception in loadProject: ${err.message}`)
+    addLog(t('log.projectLoadFailed', { error: err.message }))
   } finally {
     loading.value = false
   }
@@ -275,8 +284,8 @@ const updatePhaseByStatus = (status) => {
 const startBuildGraph = async () => {
   try {
     currentPhase.value = 1
-    buildProgress.value = { progress: 0, message: 'Starting build...' }
-    addLog('Initiating graph build...')
+    buildProgress.value = { progress: 0, message: t('step1.startingBuild') }
+    addLog(t('log.graphBuildStart'))
     
     const res = await buildGraph({ project_id: currentProjectId.value })
     if (res.success) {
@@ -291,35 +300,39 @@ const startBuildGraph = async () => {
         return
       }
 
-      addLog(`Graph build task started. Task ID: ${res.data.task_id}`)
+      addLog(t('log.graphBuildTaskStarted', { taskId: res.data.task_id }))
       startPollingTask(res.data.task_id)
     } else {
       error.value = res.error
-      addLog(`Error starting build: ${res.error}`)
+      addLog(t('log.graphBuildStartFailed', { error: res.error }))
     }
   } catch (err) {
     error.value = err.message
-    addLog(`Exception in startBuildGraph: ${err.message}`)
+    addLog(t('log.graphBuildStartFailed', { error: err.message }))
   }
 }
 
+const GRAPH_POLL_INTERVAL_MS = 10000
+
 const startGraphPolling = () => {
-  addLog('Started polling for graph data...')
+  addLog(t('log.graphPollingStart', { seconds: GRAPH_POLL_INTERVAL_MS / 1000 }))
   fetchGraphData()
-  graphPollTimer = setInterval(fetchGraphData, 10000)
+  graphPollTimer = setInterval(fetchGraphData, GRAPH_POLL_INTERVAL_MS)
 }
 
+// getGraphData sends If-None-Match for a graph it already holds; a 304 comes
+// back as notModified with the held payload, so nothing is logged or redrawn.
 const fetchGraphData = async () => {
   try {
     // Refresh project info to check for graph_id
     const projRes = await getProject(currentProjectId.value)
     if (projRes.success && projRes.data.graph_id) {
       const gRes = await getGraphData(projRes.data.graph_id)
-      if (gRes.success) {
+      if (gRes.success && !gRes.notModified) {
         graphData.value = gRes.data
         const nodeCount = gRes.data.node_count || gRes.data.nodes?.length || 0
         const edgeCount = gRes.data.edge_count || gRes.data.edges?.length || 0
-        addLog(`Graph data refreshed. Nodes: ${nodeCount}, Edges: ${edgeCount}`)
+        addLog(t('log.graphDataRefreshed', { nodes: nodeCount, edges: edgeCount }))
       }
     }
   } catch (err) {
@@ -346,7 +359,7 @@ const pollTaskStatus = async (taskId) => {
       buildProgress.value = { progress: task.progress || 0, message: task.message }
       
       if (task.status === 'completed') {
-        addLog('Graph build task completed.')
+        addLog(t('log.graphBuildCompleted'))
         stopPolling()
         stopGraphPolling() // Stop polling, do final load
         currentPhase.value = 2
@@ -360,7 +373,7 @@ const pollTaskStatus = async (taskId) => {
       } else if (task.status === 'failed') {
         stopPolling()
         error.value = task.error
-        addLog(`Graph build task failed: ${task.error}`)
+        addLog(t('log.graphBuildFailed', { error: task.error }))
       }
     }
   } catch (e) {
@@ -370,17 +383,17 @@ const pollTaskStatus = async (taskId) => {
 
 const loadGraph = async (graphId) => {
   graphLoading.value = true
-  addLog(`Loading full graph data: ${graphId}`)
+  addLog(t('log.loadingGraphData', { id: graphId }))
   try {
     const res = await getGraphData(graphId)
     if (res.success) {
       graphData.value = res.data
-      addLog('Graph data loaded successfully.')
+      addLog(t(res.notModified ? 'log.graphDataUnchanged' : 'log.graphDataLoadSuccess'))
     } else {
-      addLog(`Failed to load graph data: ${res.error}`)
+      addLog(t('log.graphLoadFailed', { error: res.error }))
     }
   } catch (e) {
-    addLog(`Exception loading graph: ${e.message}`)
+    addLog(t('log.graphLoadFailed', { error: e.message }))
   } finally {
     graphLoading.value = false
   }
@@ -388,7 +401,7 @@ const loadGraph = async (graphId) => {
 
 const refreshGraph = () => {
   if (projectData.value?.graph_id) {
-    addLog('Manual graph refresh triggered.')
+    addLog(t('log.graphManualRefresh'))
     loadGraph(projectData.value.graph_id)
   }
 }
@@ -404,7 +417,7 @@ const stopGraphPolling = () => {
   if (graphPollTimer) {
     clearInterval(graphPollTimer)
     graphPollTimer = null
-    addLog('Graph polling stopped.')
+    addLog(t('log.graphRealtimeRefreshStop'))
   }
 }
 
