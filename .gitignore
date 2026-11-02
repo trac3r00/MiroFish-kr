@@ -45,6 +45,9 @@ htmlcov/
 .cursor/
 .claude/
 
+# Agent workspace (plans, scratch reports, init-deep snapshot)
+.omo/
+
 # 文档与测试程序
 mydoc/
 mytest/
