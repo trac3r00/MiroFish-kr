@@ -1,0 +1,31 @@
+# frontend/src/components/
+
+## OVERVIEW
+8 flat SFCs, 15.2k LOC (~72% of frontend code): the actual workflow UI. Score ~9, kept as distinct domain: giant single-file components, D3 graph, hand-rolled markdown -> `v-html`.
+
+## WHERE TO LOOK
+| Component | LOC | Props | Emits | Role |
+|-----------|-----|-------|-------|------|
+| `GraphPanel.vue` | 1,423 | `graphData`, `loading`, `currentPhase`, `isSimulating` | `refresh`, `toggle-maximize` | D3 force graph (SVG, edge grouping/curvature, selection detail); used by 5 views |
+| `Step1GraphBuild.vue` | 700 | `currentPhase`, `projectData`, `ontologyProgress`, `buildProgress`, ... | `next-step` | ontology + graph build progress, creates simulation |
+| `Step2EnvSetup.vue` | 2,623 | `simulationId`, `projectData`, `graphData`, `systemLogs` | `go-back`, `next-step`, `add-log`, `update-status` | prepare: profiles + config generation, realtime polling |
+| `Step3Simulation.vue` | 1,268 | `simulationId`, `maxRounds`, `minutesPerRound`, ... | same 4 as Step2 | start/stop run, run-status polling, action feed |
+| `Step4Report.vue` | 5,162 | `reportId`, `simulationId`, `systemLogs` | `add-log`, `update-status` | report generation, agent/console log streams, section render |
+| `Step5Interaction.vue` | 2,584 | `reportId`, `simulationId` | `add-log`, `update-status` | report chat, agent interviews/surveys, markdown answers |
+| `HistoryDatabase.vue` | 1,348 | none | none | project/simulation history on Home |
+| `LanguageSwitcher.vue` | 124 | none | none | locale picker; used by 6 views |
+
+## CONVENTIONS
+- Contract with views is props down / events up only; no Pinia/Vuex. Parent views own `systemLogs` and status; children report through `add-log` / `update-status` and move the flow with `next-step` / `go-back` (or `useRouter()` push inside Step1/Step3/Step4/HistoryDatabase).
+- Each SFC keeps template + logic + a large `<style scoped>` block; no shared component barrel or design-system files - shared look is copy-pasted CSS.
+- Templates use global `$t('stepN.key')`; script-side strings use `useI18n().t`. Key namespaces in `locales/*.json`: `common`, `step1`..`step5`, `graph`, `history`, `log`, `report`, `console`, ...
+- API access via named imports from `../api/{graph,simulation,report}.js`; no env access in components.
+- Polling: Step2 2-3 s, Step3 2/3 s, Step4 1.5/2 s; timers are cleared in stop functions and `onUnmounted` (Step1 has no `onUnmounted` - parent owns its polling).
+- `LanguageSwitcher` sets i18n `locale`, `localStorage['locale']`, and `document.documentElement.lang` together - keep all three in sync.
+
+## ANTI-PATTERNS
+- `renderMarkdown` in `Step4Report.vue` (~L1874) and `Step5Interaction.vue` (~L557) is regex string replacement with NO HTML escaping, fed to `v-html` (4 bindings) with LLM/report text. Do not add new `v-html` sinks; if touching it, escape `<`, `>`, `&` before replacements.
+- The two `renderMarkdown` copies are duplicated - change both or extract deliberately, never just one.
+- Do not add literal UI copy; some English literals remain (graph detail labels) - convert when touching, add keys to every `locales/*.json`.
+- Do not grow `Step4Report.vue` further without need; it is the largest file in the repo (5,162 LOC).
+- Do not import D3 elsewhere for graphs; extend `GraphPanel` (it already handles zoom/resize and maximize).
