@@ -26,9 +26,10 @@ MiroFish-kr/
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| Backend layout, config, utils/models | `backend/AGENTS.md` | Zep-Cloud-only, locale-in-threads |
-| HTTP routes, response envelope, graph locks | `backend/app/api/AGENTS.md` | 3 blueprints, ~52 routes |
-| Pipeline (ontology -> graph -> profiles -> sim -> report) | `backend/app/services/AGENTS.md` | Zep batch journaling |
+| Backend layout, config, utils/models | `backend/AGENTS.md` | graph backend (local default / Zep Cloud), LLM profile kinds, locale-in-threads |
+| HTTP routes, response envelope, graph locks | `backend/app/api/AGENTS.md` | 4 blueprints (graph, simulation, report, llm) |
+| Pipeline (ontology -> graph -> profiles -> sim -> report) | `backend/app/services/AGENTS.md` | Zep batch journaling, archetypes |
+| LLM profiles, routing, usage, ChatGPT OAuth, gateway | `backend/app/llm/`, `backend/AGENTS.md` | the only LLM seam |
 | Frontend routes, views, axios, i18n | `frontend/AGENTS.md` | route -> view -> Step table |
 | Big Step SFCs, polling, markdown rendering | `frontend/src/components/AGENTS.md` | |
 | Env vars | `.env.example`, `backend/app/config.py` | root `.env`, loaded with override=True |
@@ -45,7 +46,8 @@ MiroFish-kr/
 | `SimulationManager` | class | `backend/app/services/simulation_manager.py` | ~5 | simulation state |
 | `TaskManager` | class | `backend/app/models/task.py` | ~5 | process-local task progress |
 | `ProjectManager` | class | `backend/app/models/project.py` | ~4 | project JSON persistence |
-| `LLMClient` | class | `backend/app/utils/llm_client.py` | ~4 | OpenAI-compatible client |
+| `chat` / `chat_json` / `resolve_profile` | fn | `backend/app/llm/` | all LLM callers | stage-routed LLM seam |
+| `LLMClient` | class | `backend/app/utils/llm_client.py` | ~4 | legacy wrapper over the seam (`stage=`) |
 | `GraphBuilderService` | class | `backend/app/services/graph_builder.py` | ~4 | Zep graph build |
 | `getProject` / `getGraphData` | fn | `frontend/src/api/graph.js` | 6 views | core API calls |
 | `LanguageSwitcher` / `GraphPanel` | SFC | `frontend/src/components/` | 6 / 5 | shared UI |
@@ -53,12 +55,16 @@ MiroFish-kr/
 ## CONVENTIONS
 - API contract spans both halves: backend returns `{success, data|message|error}`; `frontend/src/api/index.js` interceptor unwraps `response.data` and rejects on `success === false`.
 - Endpoint modules mirror 1:1: `backend/app/api/{graph,simulation,report}.py` <-> `frontend/src/api/{graph,simulation,report}.js`. Change both together.
-- `locales/` is shared: backend `utils/locale.py` (exact `Accept-Language` match, fallback `zh`) and frontend `src/i18n` (`@locales` alias). Every new user-facing string needs a key in EVERY locale JSON.
-- `languages.json` lists 7 languages but only `zh.json`/`en.json` exist; only those load.
+- `locales/` is shared: backend `utils/locale.py` and frontend `src/i18n` (`@locales` alias). Supported: `zh`, `en`, `ko`; unsupported or missing locales fall back to `en`. `languages.json` lists more languages, but only those with a JSON file load.
+- Every new user-facing string needs a key in `zh.json`, `en.json` AND `ko.json`. Korean wording follows `locales/GLOSSARY.md`.
+- LLM prompts are written in English; the locale's language instruction (`get_language_instruction()`) goes at the END of the system prompt. Never hardcode region assumptions (China, UTC+8, Weibo) in prompts.
+- Every LLM call goes through `backend/app/llm` with an explicit stage. Config is env-driven: `LLM_PROFILES`, `LLM_ROUTES`, `LLM_AGENT_POOL` (all optional; unset means one `default` profile from `LLM_*`).
 - Single backend process assumed: `TaskManager` singleton + daemon threads hold progress in memory.
 
 ## ANTI-PATTERNS (THIS PROJECT)
-- NEVER set `ZEP_API_URL`; `Config.validate()` (`backend/app/config.py`, run at startup by `run.py`) and `utils/zep.py` client setup reject it (Zep Cloud only).
+- NEVER construct `OpenAI(...)` clients or call provider SDKs outside `backend/app/llm` (and its compat helper `utils/openai_chat_compat.py`).
+- NEVER add Claude or Gemini subscription OAuth. The only OAuth provider is Sign in with ChatGPT via its official OSS flow.
+- NEVER set `ZEP_API_URL`; `Config.validate()` and `utils/zep.py` reject it (Zep Cloud has no self-hosted URL; use `GRAPH_BACKEND=local` for a free local graph).
 - NEVER leave `LLM_BOOST_*` vars blank; remove them entirely if unused.
 - NEVER replay failed Zep `graph.add` batches (no idempotency key).
 - NEVER mutate/delete a Zep graph outside the lock protocol; NEVER construct raw Zep clients (use `utils/zep.py` helpers).
@@ -85,7 +91,8 @@ docker compose up            # ghcr.io/666ghj/mirofish:latest, env_file .env, mo
 No frontend tests/lint/typecheck; no backend lint/format config.
 
 ## NOTES
-- Required env: `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL_NAME`, `ZEP_API_KEY` (`run.py` -> `Config.validate()` fails startup only on missing `LLM_API_KEY`/`ZEP_API_KEY`).
+- Required env: one LLM profile (legacy `LLM_API_KEY`/`LLM_BASE_URL`/`LLM_MODEL_NAME`, or `LLM_PROFILES`); `ZEP_API_KEY` only for `GRAPH_BACKEND=zep_cloud`. `run.py` -> `Config.validate()` fails startup otherwise.
+- Simulation start hour: a run cut short by `max_rounds` starts at the first peak hour (`simulation_start_minute` in `run_parallel_simulation.py`; override with `time_config.start_hour`). Step3 resumes an existing run instead of restarting it.
 - Python >=3.11,<3.13. The Docker image runs `npm run dev`, so the container runs in dev mode.
-- Known risks (not yet fixed): CORS `*` on `/api/*`; debug middleware logs full request bodies; markdown -> `v-html` unescaped in Step4/Step5 components; `SECRET_KEY` has a literal dev default.
+- Known risks (not yet fixed): CORS `*` on `/api/*`; markdown -> `v-html` unescaped in Step4/Step5 components; `SECRET_KEY` has a literal dev default.
 - Frontend axios base URL: `VITE_API_BASE_URL` || `http://localhost:5001`.

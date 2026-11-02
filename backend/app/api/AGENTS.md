@@ -1,20 +1,24 @@
 # backend/app/api/
 
 ## OVERVIEW
-Flask HTTP contract for the 5-step workflow: 52 routes in 3 modules (~5k LOC). Score ~11, kept as distinct domain: owns graph lifecycle locking, background-thread launch, and the JSON envelope the frontend interceptor depends on.
+Flask HTTP contract for the 5-step workflow plus LLM status: 4 blueprints (~5k LOC). Score ~11, kept as distinct domain: owns graph lifecycle locking, background-thread launch, and the JSON envelope the frontend interceptor depends on.
 
 ## WHERE TO LOOK
 | Prefix (set in `app/__init__.py`) | Module | LOC | Routes | Covers |
 |------|--------|-----|--------|--------|
 | `/api/graph` | `graph.py` | 963 | 10 | projects (get/list/delete/reset), `ontology/generate`, `build`, `task/<id>`, `data/<graph_id>`, `delete/<graph_id>` |
 | `/api/simulation` | `simulation.py` | 2,878 | 24 | entities, `create`, `prepare` (+status), profiles/config (realtime, download), `start`/`stop`, run-status, actions/timeline/posts/comments, `interview*`, `env-status`, `close-env` |
+| `/api/llm` | `llm.py` | | 6 | `status` (profiles/routes/agent_pool, no secrets), `usage` (token snapshot), `oauth/chatgpt/{start,status,signout}`, `gateway/v1/chat/completions` |
 | `/api/report` | `report.py` | 1,139 | 18 | `generate` (+status), report CRUD/download, `chat`, progress/sections, agent-log & console-log (+`/stream`), `tools/search`, `tools/statistics` |
 
-- Blueprints are created in `__init__.py` (`graph_bp`, `simulation_bp`, `report_bp`); modules are imported after creation (`noqa: E402`) to attach routes. New module => add import there + `register_blueprint` in `app/__init__.py`.
-- Frontend mirror: `frontend/src/api/{graph,simulation,report}.js` - update both sides together.
+- Blueprints are created in `__init__.py` (`graph_bp`, `simulation_bp`, `report_bp`); `llm_bp` sets its own `url_prefix` in `llm.py`; modules are imported after creation (`noqa: E402`) to attach routes. New module => add import there + `register_blueprint` in `app/__init__.py`.
+- Frontend mirror: `frontend/src/api/{graph,simulation,report,llm}.js` - update both sides together.
 
 ## CONVENTIONS
 - Envelope: `jsonify({"success": bool, "data"|"message"|"error": ...}), status`. Frontend rejects any body with `success === false`, and surfaces `error` text from non-2xx bodies - keep `error` a user-safe string, localized via `t('api.<key>')`.
+- `GET /api/simulation/<id>/run-status/detail?after=<cursor>&limit=<1..500>` is the incremental feed: returns `actions` (each with `cursor`), `next_cursor`, `has_more`, `cursor_epoch`. If `cursor_epoch` changes, restart from 0. Omitting `after` keeps the old full shape (`compact=1` drops per-platform duplicates).
+- `GET /api/graph/data/<graph_id>` sends an ETag and answers 304 on `If-None-Match`.
+- Gateway: loopback only, plus `X-MiroFish-Gateway-Token` (403 otherwise). Profile pick: `X-MiroFish-Profile` header, then body `model` as profile id. It records usage under `simulation_agent`.
 - 500 handlers currently include `traceback` in the body; follow the existing pattern only where neighbours do.
 - Handlers are sync. Long jobs (`build`, `prepare`, report `generate`) start `threading.Thread(daemon=True)`, return a `task_id`/status immediately; clients poll `TaskManager`-backed status routes. Capture locale before the thread starts.
 - Several "status" routes are `POST` with JSON body (`prepare/status`, `generate/status`, `interview/history`, `env-status`) - not REST-pure; keep method parity with frontend.

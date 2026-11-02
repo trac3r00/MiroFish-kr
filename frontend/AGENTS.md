@@ -9,8 +9,8 @@ frontend/
 ├── vite.config.js      # port 3000, opens browser, proxies /api -> http://localhost:5001; aliases @ -> src, @locales -> ../locales
 ├── index.html          # sets <html lang> from localStorage 'locale' before boot
 └── src/
-    ├── main.js / App.vue   # bootstrap; App.vue holds global reset styles
-    ├── router/index.js     # 6 routes, createWebHistory, params passed as props
+    ├── main.js / App.vue   # bootstrap; global reset, `--mf-*` tokens, AI-connection header button + panel
+    ├── router/index.js     # 6 lazy-loaded routes, createWebHistory, params passed as props
     ├── views/              # route shells: layout + GraphPanel + one StepN component
     ├── components/         # workflow UI (own AGENTS.md)
     ├── api/                # axios service + endpoint modules
@@ -28,13 +28,16 @@ frontend/
 | Report | `/report/:reportId` | `ReportView.vue` | `Step4Report` |
 | Interaction | `/interaction/:reportId` | `InteractionView.vue` | `Step5Interaction` |
 
-- API calls: `src/api/graph.js` (5 fns), `simulation.js` (19), `report.js` (6), all over default-exported axios `service` in `src/api/index.js`. Most-imported: `getProject`, `getGraphData` (6 views each), `getSimulation` (4).
+- API calls: `src/api/graph.js`, `simulation.js`, `report.js`, `llm.js` (`getLlmStatus`, `getLlmUsage`, ChatGPT sign-in fns), all over default-exported axios `service` in `src/api/index.js`. Most-imported: `getProject`, `getGraphData` (6 views each), `getSimulation` (4).
 - Backend counterpart for every endpoint: `backend/app/api/` (same graph/simulation/report split).
 
 ## CONVENTIONS
 - `<script setup>` Composition API everywhere; PascalCase SFC filenames, camelCase API functions.
 - axios `service`: baseURL `VITE_API_BASE_URL` || `http://localhost:5001` (bypasses the Vite proxy by default), timeout 300000 ms, sends `Accept-Language` = current i18n locale. Response interceptor returns `response.data` (callers get the `{success, data, ...}` envelope, not the axios response) and rejects when `success === false`; non-2xx `error` text becomes `error.message`.
-- i18n: messages loaded eagerly from `locales/*.json` but only keys listed in `locales/languages.json`; default/fallback `zh`; locale persisted in `localStorage['locale']`. Add a language = JSON file + `languages.json` entry (backend reads the same files).
+- i18n: locales with both a `languages.json` entry and a JSON file load (`zh`, `en`, `ko`). Start locale = `localStorage['locale']`, else negotiated browser language, else `en`; fallback `en`. Catalogs load lazily (`loadLocale(key)`; `setupI18n()` before mount loads the active locale + `en`); anything that needs every catalog must call `loadLocale` first (see Step4Report). Add a language = JSON file + `languages.json` entry (backend reads the same files).
+- Dates/times use `Intl.DateTimeFormat` with the active i18n locale, never a hardcoded format or `zh-CN`.
+- `getGraphData` is ETag-aware: a 304 resolves with the cached payload and `notModified: true`.
+- Run actions: poll `getRunDetailSince(id, after)` with the last `next_cursor`, not the full detail payload.
 - Long-running steps are tracked by fixed-interval polling (`setInterval` 1.5-10 s) of backend status routes; timers are cleared in stop paths/unmount.
 - Imports are mostly relative (`../api/...`); `@` alias exists but is rarely used.
 
