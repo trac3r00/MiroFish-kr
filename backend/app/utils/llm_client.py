@@ -1,113 +1,73 @@
 """
 LLM客户端封装
-统一使用OpenAI格式调用
+统一使用OpenAI格式调用；请求、路由与用量统计委托给 app.llm
 """
 
-import json
-import logging
-import re
 from typing import Optional, Dict, Any, List
-from openai import OpenAI
 
 from ..config import Config
-from .openai_chat_compat import create_chat_completion, extract_chat_completion_text
+from ..llm.client import (
+    LLMResponseError,
+    clean_chat_text as _clean_chat_text,
+    create_completion,
+    get_openai_client,
+    is_response_format_unsupported as _is_response_format_unsupported,
+    parse_json_response,
+    run_json_loop,
+)
+from ..llm.profiles import LLMProfile, load_settings
+from ..llm.router import DEFAULT_STAGE, resolve_profile
+from .openai_chat_compat import extract_chat_completion_text
+from .locale import t
+
+__all__ = [
+    "LLMClient",
+    "LLMResponseError",
+    "_clean_chat_text",
+    "_is_response_format_unsupported",
+]
+
+CUSTOM_PROFILE_ID = "custom"
 
 
-logger = logging.getLogger(__name__)
-
-
-class LLMResponseError(ValueError):
-    """A safe, structured error for unusable model responses."""
-
-    def __init__(self, message: str, *, finish_reason: Optional[str] = None):
-        super().__init__(message)
-        self.finish_reason = finish_reason
-
-
-def _is_response_format_unsupported(error: Exception) -> bool:
-    """Detect an explicit provider rejection of JSON response_format."""
-
-    if getattr(error, "status_code", None) not in {400, 422}:
-        return False
-
-    body = getattr(error, "body", None)
-    if not isinstance(body, dict):
-        return False
-
-    details = body.get("error", body)
-    if not isinstance(details, dict):
-        return False
-
-    param = str(details.get("param") or "").strip().lower()
-    if param == "response_format" or param.startswith("response_format."):
-        return True
-
-    message = str(details.get("message") or "").lower()
-    if "response_format" not in message:
-        return False
-
-    code = str(details.get("code") or "").lower()
-    unsupported_codes = {
-        "unsupported_parameter",
-        "unsupported_value",
-        "unknown_parameter",
-        "invalid_parameter",
-    }
-    unsupported_phrases = (
-        "not support",
-        "unsupported",
-        "unknown parameter",
-        "unrecognized parameter",
+def _custom_profile(api_key: Optional[str], base_url: Optional[str], model: Optional[str]) -> LLMProfile:
+    return LLMProfile(
+        id=CUSTOM_PROFILE_ID,
+        kind="openai_compatible",
+        label="Custom",
+        model=model or Config.LLM_MODEL_NAME,
+        base_url=base_url or Config.LLM_BASE_URL,
+        api_key=api_key or Config.LLM_API_KEY,
     )
-    return code in unsupported_codes or any(
-        phrase in message for phrase in unsupported_phrases
-    )
-
-
-def _clean_chat_text(content: str) -> str:
-    """Remove common reasoning wrappers and an outer Markdown JSON fence."""
-
-    cleaned = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
-    cleaned = cleaned.lstrip("\ufeff")
-    cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\n?```\s*$', '', cleaned)
-    return cleaned.strip()
-
-
-def _contains_additional_json_container(content: str) -> bool:
-    """Return True when trailing text embeds another JSON object or array."""
-
-    decoder = json.JSONDecoder()
-    for match in re.finditer(r"[\[{]", content):
-        try:
-            value, _ = decoder.raw_decode(content[match.start():])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, (dict, list)):
-            return True
-    return False
 
 
 class LLMClient:
-    """LLM客户端"""
-    
+    """LLM客户端（stage 决定使用哪个 profile；显式参数创建临时 openai_compatible profile）"""
+
     def __init__(
         self,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        stage: str = DEFAULT_STAGE,
     ):
-        self.api_key = api_key or Config.LLM_API_KEY
-        self.base_url = base_url or Config.LLM_BASE_URL
-        self.model = model or Config.LLM_MODEL_NAME
-        
-        if not self.api_key:
-            raise ValueError("LLM_API_KEY 未配置")
-        
-        self.client = OpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url
-        )
+        self.stage = stage
+        if api_key or base_url or model:
+            profile = _custom_profile(api_key, base_url, model)
+        else:
+            settings = load_settings()
+            if settings.default_profile_id is None:
+                raise ValueError(t("config.llm_api_key_missing"))
+            profile = resolve_profile(stage, settings)
+
+        if profile.kind == "openai_compatible" and not profile.api_key:
+            raise ValueError(t("config.llm_api_key_missing"))
+
+        self.profile = profile
+        self.api_key = profile.api_key
+        self.base_url = profile.base_url
+        self.model = profile.model
+        self.client = get_openai_client(profile) if profile.kind == "openai_compatible" else None
 
     def _create_completion(
         self,
@@ -117,23 +77,39 @@ class LLMClient:
         max_tokens: Optional[int],
         response_format: Optional[Dict[str, Any]],
     ) -> Any:
-        """Send one raw Chat Completions request through the compatibility layer."""
+        """Send one raw Chat Completions request through the LLM seam."""
 
-        return create_chat_completion(
-            self.client,
+        profile = getattr(self, "profile", None) or LLMProfile(
+            id=CUSTOM_PROFILE_ID,
+            kind="openai_compatible",
+            label="Custom",
             model=self.model,
+            base_url=getattr(self, "base_url", None),
+        )
+        return create_completion(
+            profile,
+            stage=getattr(self, "stage", DEFAULT_STAGE),
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             response_format=response_format,
+            openai_client=getattr(self, "client", None),
         )
-    
+
+    def _for_stage(self, stage: Optional[str]) -> "LLMClient":
+        """Client routed for a per-call stage; explicit (custom) clients keep their profile."""
+        profile = getattr(self, "profile", None)
+        if stage is None or stage == getattr(self, "stage", DEFAULT_STAGE) or profile is None or profile.id == CUSTOM_PROFILE_ID:
+            return self
+        return LLMClient(stage=stage)
+
     def chat(
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
         max_tokens: Optional[int] = 4096,
-        response_format: Optional[Dict] = None
+        response_format: Optional[Dict] = None,
+        stage: Optional[str] = None,
     ) -> str:
         """
         发送聊天请求
@@ -147,21 +123,24 @@ class LLMClient:
         Returns:
             模型响应文本
         """
+        client = self._for_stage(stage)
+        if client is not self:
+            return client.chat(messages, temperature=temperature, max_tokens=max_tokens, response_format=response_format)
         response = self._create_completion(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             response_format=response_format,
         )
-        content = extract_chat_completion_text(response)
-        return _clean_chat_text(content)
-    
+        return _clean_chat_text(extract_chat_completion_text(response))
+
     def chat_json(
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.3,
         max_tokens: Optional[int] = 4096,
         max_attempts: int = 1,
+        stage: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         发送聊天请求并返回JSON
@@ -175,116 +154,15 @@ class LLMClient:
         Returns:
             解析后的JSON对象
         """
-        if max_attempts < 1:
-            raise ValueError("max_attempts must be at least 1")
+        client = self._for_stage(stage)
+        if client is not self:
+            return client.chat_json(messages, temperature=temperature, max_tokens=max_tokens, max_attempts=max_attempts)
+        return run_json_loop(
+            self._create_completion,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            max_attempts=max_attempts,
+        )
 
-        response_format: Optional[Dict[str, str]] = {"type": "json_object"}
-        request_max_tokens = max_tokens
-        last_error: Optional[LLMResponseError] = None
-
-        for attempt in range(1, max_attempts + 1):
-            # JSON-mode capability negotiation is separate from content
-            # regeneration. An explicit response_format rejection may add one
-            # request, but it must not consume a content attempt.
-            while True:
-                try:
-                    response = self._create_completion(
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=request_max_tokens,
-                        response_format=response_format,
-                    )
-                except Exception as error:
-                    if (
-                        response_format is not None
-                        and _is_response_format_unsupported(error)
-                    ):
-                        logger.warning(
-                            "LLM provider explicitly rejected response_format; "
-                            "retrying once with prompt-only JSON guidance"
-                        )
-                        response_format = None
-                        continue
-                    raise
-                break
-
-            try:
-                return self._parse_json_response(response)
-            except LLMResponseError as error:
-                last_error = error
-                if attempt >= max_attempts:
-                    raise
-
-                # A caller-supplied cap is the common cause of a partial JSON
-                # object. Omit it for the one bounded retry so the provider can
-                # use its model-specific output limit.
-                had_token_cap = request_max_tokens is not None
-                request_max_tokens = None
-                logger.warning(
-                    "LLM returned unusable JSON (finish_reason=%s); "
-                    "retrying content generation%s",
-                    error.finish_reason or "unknown",
-                    " without an output token cap" if had_token_cap else "",
-                )
-
-        if last_error is not None:  # pragma: no cover - defensive loop guard
-            raise last_error
-        raise LLMResponseError("LLM did not produce a JSON response")
-
-    @staticmethod
-    def _parse_json_response(response: Any) -> Dict[str, Any]:
-        choices = getattr(response, "choices", None) or []
-        if not choices:
-            raise LLMResponseError("LLM returned no choices")
-
-        choice = choices[0]
-        finish_reason = getattr(choice, "finish_reason", None)
-        if finish_reason == "length":
-            raise LLMResponseError(
-                "LLM JSON output was truncated at the token limit",
-                finish_reason=finish_reason,
-            )
-        if finish_reason not in {None, "stop"}:
-            raise LLMResponseError(
-                f"LLM JSON generation stopped unexpectedly ({finish_reason})",
-                finish_reason=finish_reason,
-            )
-
-        content = _clean_chat_text(extract_chat_completion_text(response))
-        if not content:
-            raise LLMResponseError(
-                "LLM returned empty JSON content",
-                finish_reason=finish_reason,
-            )
-
-        try:
-            value = json.loads(content)
-        except json.JSONDecodeError as strict_error:
-            # Some compatible providers append a short explanation after an
-            # otherwise complete JSON object. Accept only an object decoded
-            # from the beginning; never repair or invent truncated JSON.
-            try:
-                value, end = json.JSONDecoder().raw_decode(content)
-            except json.JSONDecodeError:
-                raise LLMResponseError(
-                    "LLM returned invalid JSON "
-                    f"(line {strict_error.lineno}, column {strict_error.colno})",
-                    finish_reason=finish_reason,
-                ) from strict_error
-
-            trailing = content[end:].strip()
-            if trailing:
-                if _contains_additional_json_container(trailing):
-                    raise LLMResponseError(
-                        "LLM returned multiple JSON values",
-                        finish_reason=finish_reason,
-                    )
-                logger.warning("Ignoring text after a complete LLM JSON object")
-
-        if not isinstance(value, dict):
-            raise LLMResponseError(
-                "LLM JSON response must be a top-level JSON object",
-                finish_reason=finish_reason,
-            )
-
-        return value
+    _parse_json_response = staticmethod(parse_json_response)

@@ -25,6 +25,8 @@ def create_chat_completion(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     response_format: Optional[Dict[str, Any]] = None,
+    prompt_cache_key: Optional[str] = None,
+    extra_headers: Optional[Dict[str, str]] = None,
 ) -> Any:
     """
     Create a chat completion with model-specific request parameters.
@@ -34,6 +36,7 @@ def create_chat_completion(
     - For token limit, use `max_completion_tokens` on GPT-5, `max_tokens` otherwise.
     - Preserve the legacy request shape for every non-GPT-5 model/provider.
     - Propagate provider errors unchanged instead of guessing from message text.
+    - prompt_cache_key / extra_headers are sent only when given (callers decide per provider).
     """
     kwargs: Dict[str, Any] = {
         "model": model,
@@ -53,6 +56,11 @@ def create_chat_completion(
             kwargs["max_completion_tokens"] = max_tokens
         else:
             kwargs["max_tokens"] = max_tokens
+
+    if prompt_cache_key:
+        kwargs["prompt_cache_key"] = prompt_cache_key
+    if extra_headers:
+        kwargs["extra_headers"] = extra_headers
 
     return client.chat.completions.create(**kwargs)
 
