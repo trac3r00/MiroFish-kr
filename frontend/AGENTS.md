@@ -15,7 +15,8 @@ frontend/
     ├── components/         # workflow UI (own AGENTS.md)
     ├── api/                # axios service + endpoint modules
     ├── i18n/index.js       # vue-i18n (legacy:false), locale JSON from root locales/
-    └── store/pendingUpload.js  # reactive hand-off of files Home -> MainView
+    ├── store/pendingUpload.js  # reactive hand-off of files (+ run plan) Home -> MainView
+    └── store/autoRun.js        # run plan {mode, auto} in localStorage; claimAutoStep() runs each paid step once
 ```
 
 ## WHERE TO LOOK

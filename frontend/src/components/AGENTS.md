@@ -16,6 +16,8 @@
 | `LanguageSwitcher.vue` | 124 | none | none | locale picker; used by 6 views |
 | `ModelBadge.vue` | small | `model`, `profileLabel`, `stage?` | none | pill showing which model handled a stage/agent |
 | `AiConnectionPanel.vue` | drawer | `open` | `close`, `status-change` | profiles, stage routes, agent pool, ChatGPT sign-in, token usage (polls `/api/llm/usage` only while open) |
+| `StageTimer.vue` | small | `startedAt`, `done`, `total`, `finished`, `finishedAt`, `remainingOnly` | none | real elapsed + time left (`utils/eta.js`, windowed rate, shown only after 20 s of observed progress); feed it a real counter, never a jumpy percent |
+| `GuideBanner.vue` | small | `step`, `state` (`working`/`action`/`choose`/`ingesting`/`error`) | none | one-line "what now" bar under every view header; message keys `guide.s<step>.<state>` |
 
 ## CONVENTIONS
 - Contract with views is props down / events up only; no Pinia/Vuex. Parent views own `systemLogs` and status; children report through `add-log` / `update-status` and move the flow with `next-step` / `go-back` (or `useRouter()` push inside Step1/Step3/Step4/HistoryDatabase).

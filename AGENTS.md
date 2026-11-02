@@ -74,7 +74,7 @@ MiroFish-kr/
 - Do not build on `frontend/src/views/Process.vue`; it is dead (route `Process` -> `MainView.vue`).
 
 ## UNIQUE STYLES
-- Mixed Chinese/English comments, logs, and docs are normal (`README.md` + `README-ZH.md`).
+- Mixed Chinese/English comments, logs, and docs are normal (`README.md` is Korean and the main README; `README-EN.md`, `README-ZH.md`).
 - Root `package.json` holds no app code; it only fans out to `frontend/` (npm) and `backend/` (uv).
 
 ## COMMANDS
