@@ -3,8 +3,11 @@
 Step2: Zep实体读取与过滤、OASIS模拟准备与运行（全程自动化）
 """
 
+import json
 import os
+import threading
 import traceback
+from collections import OrderedDict
 from contextlib import nullcontext
 from flask import request, jsonify, send_file
 
@@ -17,11 +20,14 @@ from ..services.simulation_runner import (
     SimulationRunner,
     RunnerStatus,
     SimulationStopPending,
+    t_detail,
 )
 from ..services.zep_graph_memory_updater import ZepGraphMemoryManager
+from ..services import persona_archetypes
 from ..utils.logger import get_logger
 from ..utils.locale import t, get_locale, set_locale
 from ..utils.zep_lifecycle import get_graph_readers, graph_lifecycle_lock
+from ..utils.zep import graph_backend_ready, graph_backend_error
 from ..models.project import ProjectManager
 
 logger = get_logger('mirofish.api.simulation')
@@ -50,27 +56,121 @@ def _get_default_platform(simulation_id: str) -> str:
     return "reddit"
 
 
-# Interview prompt 优化前缀
-# 添加此前缀可以避免Agent调用工具，直接用文本回复
-INTERVIEW_PROMPT_PREFIX = "结合你的人设、所有的过往记忆与行动，不调用任何工具直接用文本回复我："
+# Interview prompt prefix (localized via t('api.interviewPromptPrefix')).
+# It tells the agent to answer in plain text without calling tools.
+INTERVIEW_PROMPT_PREFIX_KEY = 'api.interviewPromptPrefix'
 
 
 def optimize_interview_prompt(prompt: str) -> str:
-    """
-    优化Interview提问，添加前缀避免Agent调用工具
-    
-    Args:
-        prompt: 原始提问
-        
-    Returns:
-        优化后的提问
-    """
+    """Prefix an interview question so the agent answers directly in text."""
     if not prompt:
         return prompt
+    prefix = t(INTERVIEW_PROMPT_PREFIX_KEY)
     # 避免重复添加前缀
-    if prompt.startswith(INTERVIEW_PROMPT_PREFIX):
+    if prompt.startswith(prefix):
         return prompt
-    return f"{INTERVIEW_PROMPT_PREFIX}{prompt}"
+    return f"{prefix}{prompt}"
+
+
+# ============== LLM model / archetype exposure ==============
+
+DETAIL_DEFAULT_LIMIT = 200
+DETAIL_MAX_LIMIT = 500
+
+_AGENT_LLM_META_CACHE_SIZE = 32
+_agent_llm_meta_cache: "OrderedDict[str, tuple]" = OrderedDict()
+_agent_llm_meta_lock = threading.Lock()
+
+
+def _llm_models_summary(config: dict) -> dict:
+    """Return ``{profile_id: {label, model, count}}`` for a simulation config.
+
+    Prefers the generator-written ``llm_models``; otherwise derives counts
+    from ``agent_configs[i].llm_profile``.
+    """
+    declared = config.get("llm_models")
+    if declared:
+        return declared
+    counts: dict = {}
+    for agent in config.get("agent_configs") or []:
+        profile_id = agent.get("llm_profile")
+        if profile_id:
+            counts[profile_id] = counts.get(profile_id, 0) + 1
+    if not counts:
+        return {}
+    from ..llm import get_profile
+
+    summary = {}
+    for profile_id, count in counts.items():
+        try:
+            profile = get_profile(profile_id)
+            label, model = profile.label, profile.model
+        except ValueError:
+            # Profile removed from env since the config was generated.
+            label, model = profile_id, None
+        summary[profile_id] = {"label": label, "model": model, "count": count}
+    return summary
+
+
+def _with_agent_llm_fields(config: dict) -> dict:
+    """Ensure per-agent ``llm_profile``/``archetype`` keys and top-level ``llm_models``."""
+    for agent in config.get("agent_configs") or []:
+        agent.setdefault("llm_profile", None)
+        agent.setdefault("archetype", None)
+    config["llm_models"] = _llm_models_summary(config)
+    return config
+
+
+def _agent_llm_meta(simulation_id: str) -> tuple:
+    """(llm_models, {agent_id: (llm_profile, archetype)}) cached by config mtime."""
+    config_file = os.path.join(
+        Config.OASIS_SIMULATION_DATA_DIR, simulation_id, "simulation_config.json"
+    )
+    try:
+        stat = os.stat(config_file)
+    except FileNotFoundError:
+        return {}, {}
+    key = (stat.st_mtime_ns, stat.st_size)
+    with _agent_llm_meta_lock:
+        cached = _agent_llm_meta_cache.get(simulation_id)
+        if cached and cached[0] == key:
+            _agent_llm_meta_cache.move_to_end(simulation_id)
+            return cached[1], cached[2]
+    try:
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except (OSError, ValueError) as e:
+        logger.warning(f"读取 config 文件失败（可能正在写入中）: {e}")
+        return {}, {}
+    agents = {
+        agent.get("agent_id"): (agent.get("llm_profile"), agent.get("archetype"))
+        for agent in config.get("agent_configs") or []
+    }
+    llm_models = _llm_models_summary(config)
+    with _agent_llm_meta_lock:
+        _agent_llm_meta_cache[simulation_id] = (key, llm_models, agents)
+        _agent_llm_meta_cache.move_to_end(simulation_id)
+        while len(_agent_llm_meta_cache) > _AGENT_LLM_META_CACHE_SIZE:
+            _agent_llm_meta_cache.popitem(last=False)
+    return llm_models, agents
+
+
+def _parse_persona_mix(raw):
+    """Validate ``{"preset": str, "seed": int}``; ``None`` when omitted."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(t('api.invalidPersonaMix'))
+    preset = raw.get("preset")
+    seed = raw.get("seed", 0)
+    valid_presets = {item["id"] for item in persona_archetypes.list_presets()}
+    if (
+        preset not in valid_presets
+        or isinstance(seed, bool)
+        or not isinstance(seed, int)
+    ):
+        raise ValueError(t('api.invalidPersonaMix'))
+    return {"preset": preset, "seed": seed}
 
 
 # ============== 实体读取接口 ==============
@@ -87,10 +187,10 @@ def get_graph_entities(graph_id: str):
         enrich: 是否获取相关边信息（默认true）
     """
     try:
-        if not Config.ZEP_API_KEY:
+        if not graph_backend_ready():
             return jsonify({
                 "success": False,
-                "error": t('api.zepApiKeyMissing')
+                "error": graph_backend_error()
             }), 500
         
         entity_types_str = request.args.get('entity_types', '')
@@ -124,10 +224,10 @@ def get_graph_entities(graph_id: str):
 def get_entity_detail(graph_id: str, entity_uuid: str):
     """获取单个实体的详细信息"""
     try:
-        if not Config.ZEP_API_KEY:
+        if not graph_backend_ready():
             return jsonify({
                 "success": False,
-                "error": t('api.zepApiKeyMissing')
+                "error": graph_backend_error()
             }), 500
         
         reader = ZepEntityReader()
@@ -157,10 +257,10 @@ def get_entity_detail(graph_id: str, entity_uuid: str):
 def get_entities_by_type(graph_id: str, entity_type: str):
     """获取指定类型的所有实体"""
     try:
-        if not Config.ZEP_API_KEY:
+        if not graph_backend_ready():
             return jsonify({
                 "success": False,
-                "error": t('api.zepApiKeyMissing')
+                "error": graph_backend_error()
             }), 500
         
         enrich = request.args.get('enrich', 'true').lower() == 'true'
@@ -290,7 +390,7 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
     
     # 检查目录是否存在
     if not os.path.exists(simulation_dir):
-        return False, {"reason": "模拟目录不存在"}
+        return False, {"reason": t('api.simulationDirectoryNotFound')}
     
     # 必要文件列表（不包括脚本，脚本位于 backend/scripts/）
     required_files = [
@@ -312,7 +412,7 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
     
     if missing_files:
         return False, {
-            "reason": "缺少必要文件",
+            "reason": t('api.prepareMissingFiles'),
             "missing_files": missing_files,
             "existing_files": existing_files
         }
@@ -377,13 +477,13 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
         else:
             logger.warning(f"模拟 {simulation_id} 检测结果: 未准备完成 (status={status}, config_generated={config_generated})")
             return False, {
-                "reason": f"状态不在已准备列表中或config_generated为false: status={status}, config_generated={config_generated}",
+                "reason": t('api.prepareNotReadyReason', status=status, config_generated=config_generated),
                 "status": status,
                 "config_generated": config_generated
             }
             
     except Exception as e:
-        return False, {"reason": f"读取状态文件失败: {str(e)}"}
+        return False, {"reason": t_detail('api.prepareStateReadFailed', error=e)}
 
 
 @simulation_bp.route('/prepare', methods=['POST'])
@@ -497,6 +597,15 @@ def prepare_simulation():
         entity_types_list = data.get('entity_types')
         use_llm_for_profiles = data.get('use_llm_for_profiles', True)
         parallel_profile_count = data.get('parallel_profile_count', 5)
+        try:
+            persona_mix = _parse_persona_mix(data.get('persona_mix'))
+        except ValueError as e:
+            return jsonify({
+                "success": False,
+                "error": str(e)
+            }), 400
+        # Only forwarded when given, so the manager's old signature still works.
+        prepare_options = {} if persona_mix is None else {"persona_mix": persona_mix}
         
         # ========== 同步获取实体数量（在后台任务启动前） ==========
         # 这样前端在调用prepare后立即就能获取到预期Agent总数
@@ -617,13 +726,14 @@ def prepare_simulation():
                     defined_entity_types=entity_types_list,
                     use_llm_for_profiles=use_llm_for_profiles,
                     progress_callback=progress_callback,
-                    parallel_profile_count=parallel_profile_count
+                    parallel_profile_count=parallel_profile_count,
+                    **prepare_options
                 )
 
                 if result_state.status == SimulationStatus.FAILED:
                     task_manager.fail_task(
                         task_id,
-                        result_state.error or "模拟准备失败"
+                        result_state.error or t('api.prepareFailed')
                     )
                 else:
                     task_manager.complete_task(
@@ -655,7 +765,8 @@ def prepare_simulation():
                 "message": t('api.prepareStarted'),
                 "already_prepared": False,
                 "expected_entities_count": state.entities_count,  # 预期的Agent总数
-                "entity_types": state.entity_types  # 实体类型列表
+                "entity_types": state.entity_types,  # 实体类型列表
+                "persona_mix": persona_mix
             }
         })
         
@@ -672,6 +783,15 @@ def prepare_simulation():
             "error": str(e),
             "traceback": traceback.format_exc()
         }), 500
+
+
+@simulation_bp.route('/persona-presets', methods=['GET'])
+def get_persona_presets():
+    """List persona archetype presets for the request locale."""
+    return jsonify({
+        "success": True,
+        "data": persona_archetypes.list_presets(get_locale())
+    })
 
 
 @simulation_bp.route('/prepare/status', methods=['POST'])
@@ -986,7 +1106,7 @@ def get_simulation_history():
             project = ProjectManager.get_project(sim.project_id)
             if project and hasattr(project, 'files') and project.files:
                 sim_dict["files"] = [
-                    {"filename": f.get("filename", "未知文件")} 
+                    {"filename": f.get("filename", t('history.unknownFile'))}
                     for f in project.files[:3]
                 ]
             else:
@@ -1227,7 +1347,7 @@ def get_simulation_config_realtime(simulation_id: str):
             
             try:
                 with open(config_file, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
+                    config = _with_agent_llm_fields(json.load(f))
             except (json.JSONDecodeError, Exception) as e:
                 logger.warning(f"读取 config 文件失败（可能正在写入中）: {e}")
                 config = None
@@ -1288,7 +1408,8 @@ def get_simulation_config_realtime(simulation_id: str):
                 "has_twitter_config": "twitter_config" in config,
                 "has_reddit_config": "reddit_config" in config,
                 "generated_at": config.get("generated_at"),
-                "llm_model": config.get("llm_model")
+                "llm_model": config.get("llm_model"),
+                "llm_models": config["llm_models"]
             }
         
         return jsonify({
@@ -1329,7 +1450,7 @@ def get_simulation_config(simulation_id: str):
         
         return jsonify({
             "success": True,
-            "data": config
+            "data": _with_agent_llm_fields(config)
         })
         
     except Exception as e:
@@ -1633,23 +1754,21 @@ def start_simulation():
                     try:
                         stopped = SimulationRunner.stop_simulation(simulation_id)
                     except SimulationStopPending as error:
+                        logger.warning(f"旧模拟仍在停止中: {error}")
                         return jsonify({
                             "success": False,
                             "pending": True,
-                            "error": str(error),
+                            "error": t('api.simStopPending'),
                         }), 409
                     except Exception as error:
                         return jsonify({
                             "success": False,
-                            "error": (
-                                "Cannot restart until the previous simulation "
-                                f"finalizes safely: {error}"
-                            ),
+                            "error": t_detail('api.restartBlockedFinalizing', error=error),
                         }), 409
                     if stopped.runner_status != RunnerStatus.STOPPED:
                         return jsonify({
                             "success": False,
-                            "error": "Previous simulation did not reach STOPPED",
+                            "error": t('api.previousNotStopped'),
                         }), 409
 
                 # 如果是强制模式，清理运行日志
@@ -1659,9 +1778,9 @@ def start_simulation():
                     if not cleanup_result.get("success"):
                         return jsonify({
                             "success": False,
-                            "error": (
-                                "Failed to clean previous simulation logs: "
-                                f"{cleanup_result.get('errors')}"
+                            "error": t_detail(
+                                'api.cleanupLogsFailed',
+                                errors=cleanup_result.get('errors'),
                             ),
                         }), 500
                     force_restarted = True
@@ -1713,10 +1832,7 @@ def start_simulation():
                 if current_graph_id != graph_id:
                     return jsonify({
                         "success": False,
-                        "error": (
-                            "The project graph changed while the simulation "
-                            "was starting; retry after refreshing the project"
-                        ),
+                        "error": t('api.graphChangedDuringStart'),
                     }), 409
                 if (
                     refreshed_state.graph_id
@@ -1724,20 +1840,13 @@ def start_simulation():
                 ):
                     return jsonify({
                         "success": False,
-                        "error": (
-                            "The simulation references an older graph; "
-                            "prepare it again before enabling graph memory"
-                        ),
+                        "error": t('api.simGraphOutdated'),
                     }), 409
                 active_reports = get_graph_readers(graph_id)
                 if active_reports:
                     return jsonify({
                         "success": False,
-                        "error": (
-                            "A report is currently reading this graph; wait "
-                            "for report generation to finish before enabling "
-                            "graph memory updates"
-                        ),
+                        "error": t('api.graphReadByReport'),
                         "active_reports": active_reports,
                     }), 409
                 state = refreshed_state
@@ -1831,10 +1940,11 @@ def stop_simulation():
         })
 
     except SimulationStopPending as e:
+        logger.warning(f"模拟仍在停止中: {e}")
         return jsonify({
             "success": False,
             "pending": True,
-            "error": str(e),
+            "error": t('api.simStopPending'),
         }), 202
 
     except ValueError as e:
@@ -1906,9 +2016,11 @@ def get_run_status(simulation_id: str):
                 }
             })
         
+        result = run_state.to_dict()
+        result["llm_models"] = _agent_llm_meta(simulation_id)[0]
         return jsonify({
             "success": True,
-            "data": run_state.to_dict()
+            "data": result
         })
         
     except Exception as e:
@@ -1923,90 +2035,129 @@ def get_run_status(simulation_id: str):
 @simulation_bp.route('/<simulation_id>/run-status/detail', methods=['GET'])
 def get_run_status_detail(simulation_id: str):
     """
-    获取模拟运行详细状态（包含所有动作）
-    
-    用于前端展示实时动态
-    
+    获取模拟运行详细状态（包含动作）
+
     Query参数：
         platform: 过滤平台（twitter/reddit，可选）
-    
-    返回：
-        {
-            "success": true,
-            "data": {
-                "simulation_id": "sim_xxxx",
-                "runner_status": "running",
-                "current_round": 5,
-                ...
-                "all_actions": [
-                    {
-                        "round_num": 5,
-                        "timestamp": "2025-12-01T10:30:00",
-                        "platform": "twitter",
-                        "agent_id": 3,
-                        "agent_name": "Agent Name",
-                        "action_type": "CREATE_POST",
-                        "action_args": {"content": "..."},
-                        "result": null,
-                        "success": true
-                    },
-                    ...
-                ],
-                "twitter_actions": [...],  # Twitter 平台的所有动作
-                "reddit_actions": [...]    # Reddit 平台的所有动作
-            }
-        }
+        after:    增量游标（可选）。给出时进入增量模式，只返回 cursor > after 的动作
+        limit:    增量模式每页条数（默认200，最大500）
+        compact:  旧模式下为1时省略重复的 twitter_actions / reddit_actions
+
+    增量模式（after=<int>）返回状态字段 + ：
+        "actions": [... 每条带 "cursor"、"llm_profile"、"archetype"，按 cursor 升序],
+        "next_cursor": int,     # 下次请求的 after
+        "has_more": bool,       # 还有更多已索引动作
+        "cursor_total": int,    # 当前已索引的动作总数
+        "cursor_epoch": str,    # 索引重建时改变；变化时客户端应从 after=0 重新开始
+        "cursor_reset": bool,   # after 超过 cursor_total（例如后端重启后）
+        "llm_models": {...}
+
+    游标定义：每条 Agent 动作按到达顺序获得从1开始的整数序号；每次刷新只读取
+    各平台日志新追加的完整行，本批次内按 (timestamp, twitter<reddit, 行号) 合并后追加。
+    已分配的序号不会改变，因此从 after=0 连续翻页得到完整、无重复的列表。
+
+    省略 after 时保持旧的完整返回结构（all_actions / twitter_actions /
+    reddit_actions / recent_actions，按时间倒序），但日志只读取一遍。
     """
     try:
         run_state = SimulationRunner.get_run_state(simulation_id)
         platform_filter = request.args.get('platform')
-        
-        if not run_state:
+        after_raw = request.args.get('after')
+
+        if after_raw is not None:
+            try:
+                after = int(after_raw)
+                limit = int(request.args.get('limit', DETAIL_DEFAULT_LIMIT))
+            except ValueError:
+                return jsonify({
+                    "success": False,
+                    "error": t('api.invalidCursorParams', max=DETAIL_MAX_LIMIT)
+                }), 400
+            if after < 0 or limit < 1:
+                return jsonify({
+                    "success": False,
+                    "error": t('api.invalidCursorParams', max=DETAIL_MAX_LIMIT)
+                }), 400
+            if platform_filter not in (None, "twitter", "reddit"):
+                return jsonify({
+                    "success": False,
+                    "error": t('api.invalidInterviewPlatform')
+                }), 400
+            page = SimulationRunner.get_actions_page(
+                simulation_id,
+                after=after,
+                limit=min(limit, DETAIL_MAX_LIMIT),
+                platform=platform_filter,
+            )
+            llm_models, agent_meta = _agent_llm_meta(simulation_id)
+            for action in page["actions"]:
+                llm_profile, archetype = agent_meta.get(
+                    action["agent_id"], (None, None)
+                )
+                action["llm_profile"] = llm_profile
+                action["archetype"] = archetype
+            if run_state:
+                result = run_state.to_dict()
+                result["rounds_count"] = len(run_state.rounds)
+            else:
+                result = {"simulation_id": simulation_id, "runner_status": "idle"}
+            result.update({
+                "actions": page["actions"],
+                "next_cursor": page["next_cursor"],
+                "has_more": page["next_cursor"] < page["total"],
+                "cursor_total": page["total"],
+                "cursor_epoch": page["epoch"],
+                "cursor_reset": page["cursor_reset"],
+                "llm_models": llm_models,
+            })
             return jsonify({
                 "success": True,
-                "data": {
-                    "simulation_id": simulation_id,
-                    "runner_status": "idle",
-                    "all_actions": [],
-                    "twitter_actions": [],
-                    "reddit_actions": []
-                }
+                "data": result
             })
-        
-        # 获取完整的动作列表
-        all_actions = SimulationRunner.get_all_actions(
-            simulation_id=simulation_id,
-            platform=platform_filter
-        )
-        
-        # 分平台获取动作
-        twitter_actions = SimulationRunner.get_all_actions(
-            simulation_id=simulation_id,
-            platform="twitter"
-        ) if not platform_filter or platform_filter == "twitter" else []
-        
-        reddit_actions = SimulationRunner.get_all_actions(
-            simulation_id=simulation_id,
-            platform="reddit"
-        ) if not platform_filter or platform_filter == "reddit" else []
-        
-        # 获取当前轮次的动作（recent_actions 只展示最新一轮）
-        current_round = run_state.current_round
-        recent_actions = SimulationRunner.get_all_actions(
-            simulation_id=simulation_id,
-            platform=platform_filter,
-            round_num=current_round
-        ) if current_round > 0 else []
-        
-        # 获取基础状态信息
+
+        compact = request.args.get('compact') == '1'
+
+        if not run_state:
+            data = {
+                "simulation_id": simulation_id,
+                "runner_status": "idle",
+                "all_actions": [],
+            }
+            if not compact:
+                data["twitter_actions"] = []
+                data["reddit_actions"] = []
+            return jsonify({
+                "success": True,
+                "data": data
+            })
+
+        # Single pass over the logs; per-platform and current-round views are
+        # filtered from it (stable sort keeps the old per-call ordering).
+        all_actions = [
+            a.to_dict()
+            for a in SimulationRunner.get_all_actions(
+                simulation_id=simulation_id,
+                platform=platform_filter
+            )
+        ]
+
         result = run_state.to_dict()
-        result["all_actions"] = [a.to_dict() for a in all_actions]
-        result["twitter_actions"] = [a.to_dict() for a in twitter_actions]
-        result["reddit_actions"] = [a.to_dict() for a in reddit_actions]
+        result["all_actions"] = all_actions
+        if not compact:
+            result["twitter_actions"] = [
+                a for a in all_actions if a["platform"] == "twitter"
+            ] if not platform_filter or platform_filter == "twitter" else []
+            result["reddit_actions"] = [
+                a for a in all_actions if a["platform"] == "reddit"
+            ] if not platform_filter or platform_filter == "reddit" else []
         result["rounds_count"] = len(run_state.rounds)
         # recent_actions 只展示当前最新一轮两个平台的内容
-        result["recent_actions"] = [a.to_dict() for a in recent_actions]
-        
+        current_round = run_state.current_round
+        result["recent_actions"] = [
+            a for a in all_actions if a["round_num"] == current_round
+        ] if current_round > 0 else []
+        result["llm_models"] = _agent_llm_meta(simulation_id)[0]
+
         return jsonify({
             "success": True,
             "data": result

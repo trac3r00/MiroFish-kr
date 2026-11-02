@@ -28,9 +28,16 @@ class Config:
     LLM_API_KEY = os.environ.get('LLM_API_KEY')
     LLM_BASE_URL = os.environ.get('LLM_BASE_URL', 'https://api.openai.com/v1')
     LLM_MODEL_NAME = os.environ.get('LLM_MODEL_NAME', 'gpt-4o-mini')
+    # 可选：多 provider profile / stage 路由 / 模拟 agent 模型池（解析见 app/llm/profiles.py）
+    LLM_PROFILES = os.environ.get('LLM_PROFILES')
+    LLM_ROUTES = os.environ.get('LLM_ROUTES')
+    LLM_AGENT_POOL = os.environ.get('LLM_AGENT_POOL')
     
     # Zep配置
     ZEP_API_KEY = os.environ.get('ZEP_API_KEY')
+    GRAPH_BACKEND = os.environ.get('GRAPH_BACKEND')
+    GRAPH_LOCAL_DB = os.environ.get('GRAPH_LOCAL_DB')
+    GRAPH_LOCAL_EMBEDDINGS = os.environ.get('GRAPH_LOCAL_EMBEDDINGS')
     
     # 文件上传配置
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50MB
@@ -59,17 +66,32 @@ class Config:
     REPORT_AGENT_MAX_TOOL_CALLS = int(os.environ.get('REPORT_AGENT_MAX_TOOL_CALLS', '5'))
     REPORT_AGENT_MAX_REFLECTION_ROUNDS = int(os.environ.get('REPORT_AGENT_MAX_REFLECTION_ROUNDS', '2'))
     REPORT_AGENT_TEMPERATURE = float(os.environ.get('REPORT_AGENT_TEMPERATURE', '0.5'))
+    REPORT_TOOL_RESULT_MAX_CHARS = int(os.environ.get('REPORT_TOOL_RESULT_MAX_CHARS', '6000'))
+    REPORT_MAX_PARALLEL_TOOLS = int(os.environ.get('REPORT_MAX_PARALLEL_TOOLS', '3'))
+    REPORT_PREV_SECTIONS_MAX_CHARS = int(os.environ.get('REPORT_PREV_SECTIONS_MAX_CHARS', '12000'))
+    REPORT_CHAT_HISTORY_MAX_CHARS = int(os.environ.get('REPORT_CHAT_HISTORY_MAX_CHARS', '8000'))
     
     @classmethod
     def validate(cls) -> list[str]:
         """验证必要配置"""
         errors: list[str] = []
-        if not cls.LLM_API_KEY:
-            errors.append("LLM_API_KEY 未配置")
-        if not cls.ZEP_API_KEY:
-            errors.append("ZEP_API_KEY 未配置")
-        if os.environ.get("ZEP_API_URL"):
-            errors.append("ZEP_API_URL 不受支持；MiroFish 仅连接 Zep Cloud")
+        from .llm.profiles import load_settings
+        from .utils.locale import t
+
+        try:
+            if not load_settings().profiles:
+                errors.append(t('config.llm_api_key_missing'))
+        except ValueError as error:
+            errors.append(t('config.llm_config_invalid', error=error))
+        backend = (os.environ.get("GRAPH_BACKEND") or cls.GRAPH_BACKEND or "").strip().lower()
+        if not backend:
+            backend = "zep_cloud" if (os.environ.get("ZEP_API_KEY") or cls.ZEP_API_KEY or "").strip() else "local"
+        if backend not in {"local", "zep_cloud"}:
+            errors.append(t("config.graph_backend_invalid", value=backend))
+        if backend == "zep_cloud" and not (os.environ.get("ZEP_API_KEY") or cls.ZEP_API_KEY):
+            errors.append(t('config.zep_api_key_missing'))
+        if backend == "zep_cloud" and os.environ.get("ZEP_API_URL"):
+            errors.append(t('config.zep_api_url_unsupported'))
         if cls.DEBUG:
             import warnings
             warnings.warn("Flask DEBUG mode is enabled. Do not use in production.", RuntimeWarning)

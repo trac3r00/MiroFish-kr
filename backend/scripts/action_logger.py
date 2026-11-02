@@ -12,34 +12,96 @@
     └── run_state.json       # 运行状态（API 查询用）
 """
 
+import atexit
 import json
 import os
 import logging
+import threading
+import time
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 class PlatformActionLogger:
     """单平台动作日志记录器"""
     
-    def __init__(self, platform: str, base_dir: str):
+    # 动作行先缓冲，满 MAX_BUFFER_LINES 行、最早一行超过 MAX_BUFFER_AGE 秒、
+    # 轮次/模拟事件或 close() 时一次性写入（减少 open/write 次数）
+    MAX_BUFFER_LINES = 50
+    MAX_BUFFER_AGE = 1.0
+
+    def __init__(
+        self,
+        platform: str,
+        base_dir: str,
+        max_buffer_lines: Optional[int] = None,
+        max_buffer_age: Optional[float] = None,
+        clock: Callable[[], float] = time.monotonic,
+    ):
         """
         初始化日志记录器
         
         Args:
             platform: 平台名称 (twitter/reddit)
             base_dir: 模拟目录的基础路径
+            max_buffer_lines: 缓冲行数上限（默认 50）
+            max_buffer_age: 缓冲最长秒数（默认 1.0）
+            clock: 单调时钟（测试可注入）
         """
         self.platform = platform
         self.base_dir = base_dir
         self.log_dir = os.path.join(base_dir, platform)
         self.log_path = os.path.join(self.log_dir, "actions.jsonl")
+        self.max_buffer_lines = max_buffer_lines or self.MAX_BUFFER_LINES
+        self.max_buffer_age = self.MAX_BUFFER_AGE if max_buffer_age is None else max_buffer_age
+        self._clock = clock
+        self._buffer: List[str] = []
+        self._first_buffered_at: Optional[float] = None
+        self._lock = threading.Lock()
+        self._closed = False
         self._ensure_dir()
+        # 进程正常退出时兜底写出缓冲
+        atexit.register(self.flush)
     
     def _ensure_dir(self):
         """确保目录存在"""
         os.makedirs(self.log_dir, exist_ok=True)
     
+    def _write(self, entry: Dict[str, Any], force: bool = False):
+        line = json.dumps(entry, ensure_ascii=False) + '\n'
+        with self._lock:
+            if self._first_buffered_at is None:
+                self._first_buffered_at = self._clock()
+            first_buffered_at = self._first_buffered_at
+            self._buffer.append(line)
+            if (
+                force
+                or self._closed
+                or len(self._buffer) >= self.max_buffer_lines
+                or self._clock() - first_buffered_at >= self.max_buffer_age
+            ):
+                self._flush_locked()
+
+    def _flush_locked(self):
+        if not self._buffer:
+            return
+        # 写入失败时保留缓冲，下次 flush 重试，不丢行
+        with open(self.log_path, 'a', encoding='utf-8') as f:
+            f.write(''.join(self._buffer))
+        self._buffer.clear()
+        self._first_buffered_at = None
+
+    def flush(self):
+        """把缓冲的行写入 actions.jsonl"""
+        with self._lock:
+            self._flush_locked()
+
+    def close(self):
+        """写出剩余缓冲；之后的记录不再缓冲，直接写入"""
+        self.flush()
+        self._closed = True
+        atexit.unregister(self.flush)
+
     def log_action(
         self,
         round_num: int,
@@ -62,8 +124,7 @@ class PlatformActionLogger:
             "success": success,
         }
         
-        with open(self.log_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+        self._write(entry)
     
     def log_round_start(self, round_num: int, simulated_hour: int):
         """记录轮次开始"""
@@ -74,8 +135,7 @@ class PlatformActionLogger:
             "simulated_hour": simulated_hour,
         }
         
-        with open(self.log_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+        self._write(entry, force=True)
     
     def log_round_end(self, round_num: int, actions_count: int):
         """记录轮次结束"""
@@ -86,8 +146,7 @@ class PlatformActionLogger:
             "actions_count": actions_count,
         }
         
-        with open(self.log_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+        self._write(entry, force=True)
     
     def log_simulation_start(self, config: Dict[str, Any]):
         """记录模拟开始"""
@@ -99,8 +158,7 @@ class PlatformActionLogger:
             "agents_count": len(config.get("agent_configs", [])),
         }
         
-        with open(self.log_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+        self._write(entry, force=True)
     
     def log_simulation_end(self, total_rounds: int, total_actions: int):
         """记录模拟结束"""
@@ -112,8 +170,7 @@ class PlatformActionLogger:
             "total_actions": total_actions,
         }
         
-        with open(self.log_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+        self._write(entry, force=True)
 
 
 class SimulationLogManager:
@@ -178,6 +235,12 @@ class SimulationLogManager:
             self.reddit_logger = PlatformActionLogger("reddit", self.simulation_dir)
         return self.reddit_logger
     
+    def close(self):
+        """写出各平台缓冲的动作日志"""
+        for platform_logger in (self.twitter_logger, self.reddit_logger):
+            if platform_logger is not None:
+                platform_logger.close()
+
     def log(self, message: str, level: str = "info"):
         """记录主日志"""
         if self._main_logger:

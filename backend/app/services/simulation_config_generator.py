@@ -12,41 +12,129 @@
 
 import json
 import math
+import time
+import zlib
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 
-from openai import OpenAI
-
 from ..config import Config
+from ..llm.client import create_completion, is_response_format_unsupported
+from ..llm.profiles import LLMProfile, LLMSettings, load_settings
+from ..llm.router import assign_agent_profiles, resolve_profile
 from ..utils.logger import get_logger
-from ..utils.locale import get_language_instruction, t
-from ..utils.openai_chat_compat import create_chat_completion, extract_chat_completion_text
-from .zep_entity_reader import EntityNode, ZepEntityReader
+from ..utils.locale import get_language_instruction, get_locale, t
+from ..utils.openai_chat_compat import extract_chat_completion_text
+from .persona_archetypes import archetype_activity_overrides, assign_archetypes, get_archetype
+from .zep_entity_reader import EntityNode
 
 logger = get_logger('mirofish.simulation_config')
 
-# 中国作息时间配置（北京时间）
-CHINA_TIMEZONE_CONFIG = {
-    # 深夜时段（几乎无人活动）
-    "dead_hours": [0, 1, 2, 3, 4, 5],
-    # 早间时段（逐渐醒来）
-    "morning_hours": [6, 7, 8],
-    # 工作时段
-    "work_hours": [9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
-    # 晚间高峰（最活跃）
-    "peak_hours": [19, 20, 21, 22],
-    # 夜间时段（活跃度下降）
-    "night_hours": [23],
-    # 活跃度系数
-    "activity_multipliers": {
-        "dead": 0.05,      # 凌晨几乎无人
-        "morning": 0.4,    # 早间逐渐活跃
-        "work": 0.7,       # 工作时段中等
-        "peak": 1.5,       # 晚间高峰
-        "night": 0.5       # 深夜下降
-    }
+LLM_STAGE = "config"
+
+_DEFAULT_ACTIVITY_MULTIPLIERS = {
+    "dead": 0.05,      # 深夜几乎无人
+    "morning": 0.4,    # 早间逐渐活跃
+    "work": 0.7,       # 工作时段中等
+    "peak": 1.5,       # 晚间高峰
+    "night": 0.5,      # 深夜下降
 }
+
+# 地区作息配置（按 locale 选择；场景另有说明时由 LLM 调整）
+# 小时为本地时间 0-23；区间均为左闭右开，例如 range(21, 24) = 21:00-24:00
+REGION_PROFILES: Dict[str, Dict[str, Any]] = {
+    # 原 CHINA_TIMEZONE_CONFIG，数值保持不变
+    "zh-CN": {
+        "timezone": "Asia/Shanghai",
+        "utc_offset": "+08:00",
+        "dead_hours": [0, 1, 2, 3, 4, 5],
+        "morning_hours": [6, 7, 8],
+        "work_hours": [9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+        "peak_hours": [19, 20, 21, 22],
+        "night_hours": [23],
+        "routine_windows": {},
+        "activity_multipliers": dict(_DEFAULT_ACTIVITY_MULTIPLIERS),
+        "rule_active_hours": {
+            "institution": list(range(9, 18)),
+            "media": list(range(7, 24)),
+            "expert": list(range(8, 22)),
+            "student": [8, 9, 10, 11, 12, 13, 18, 19, 20, 21, 22, 23],
+            "alumni": [12, 13, 19, 20, 21, 22, 23],
+            "person": [9, 10, 11, 12, 13, 18, 19, 20, 21, 22, 23],
+        },
+    },
+    # 韩国：出勤 07-09，午餐 12-13，下班 18-20，高峰 21-24，深夜 02-06
+    "ko-KR": {
+        "timezone": "Asia/Seoul",
+        "utc_offset": "+09:00",
+        "dead_hours": list(range(2, 6)),
+        "morning_hours": [6, 7, 8],
+        "work_hours": list(range(9, 18)),
+        "peak_hours": list(range(21, 24)),
+        "night_hours": [0, 1],
+        "routine_windows": {
+            "commute": list(range(7, 9)),
+            "lunch": list(range(12, 13)),
+            "after_work": list(range(18, 20)),
+        },
+        "activity_multipliers": dict(_DEFAULT_ACTIVITY_MULTIPLIERS),
+        "rule_active_hours": {
+            "institution": list(range(9, 18)),
+            "media": list(range(7, 24)),
+            "expert": list(range(8, 23)),
+            "student": [12, 13, 18, 19, 20, 21, 22, 23, 0, 1],
+            "alumni": [7, 8, 12, 18, 19, 21, 22, 23],
+            "person": [7, 8, 12, 18, 19, 20, 21, 22, 23],
+        },
+    },
+    # 通用英语地区作息（不绑定具体时区）
+    "en-US": {
+        "timezone": "local",
+        "utc_offset": None,
+        "dead_hours": [1, 2, 3, 4, 5],
+        "morning_hours": [6, 7, 8],
+        "work_hours": list(range(9, 17)),
+        "peak_hours": [18, 19, 20, 21],
+        "night_hours": [22, 23, 0],
+        "routine_windows": {},
+        "activity_multipliers": dict(_DEFAULT_ACTIVITY_MULTIPLIERS),
+        "rule_active_hours": {
+            "institution": list(range(9, 17)),
+            "media": list(range(6, 24)),
+            "expert": list(range(8, 21)),
+            "student": [11, 12, 13, 17, 18, 19, 20, 21, 22, 23],
+            "alumni": [7, 8, 12, 17, 18, 19, 20, 21],
+            "person": [7, 8, 12, 17, 18, 19, 20, 21, 22],
+        },
+    },
+}
+
+_LOCALE_REGIONS = {"ko": "ko-KR", "zh": "zh-CN", "en": "en-US"}
+DEFAULT_REGION = "en-US"
+
+
+def select_region(locale: Optional[str] = None) -> str:
+    """Pick a region profile id for a UI/LLM locale (current thread/request locale by default)."""
+    locale = (locale or get_locale() or "").lower()
+    return _LOCALE_REGIONS.get(locale.split("-", 1)[0], DEFAULT_REGION)
+
+
+def _stable_seed(value: str) -> int:
+    return zlib.crc32(value.encode("utf-8"))
+
+
+def normalize_persona_mix(persona_mix: Optional[Dict[str, Any]], simulation_id: str) -> Dict[str, Any]:
+    """Return {"preset", "seed"}; missing preset means "off", missing seed derives from the simulation id."""
+    persona_mix = persona_mix or {}
+    preset = persona_mix.get("preset") or "off"
+    seed = persona_mix.get("seed")
+    if seed is None:
+        seed = _stable_seed(simulation_id)
+    if not isinstance(preset, str):
+        raise ValueError(f"persona_mix.preset must be a string, got {preset!r}")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError(f"persona_mix.seed must be an integer, got {seed!r}")
+    return {"preset": preset, "seed": seed}
 
 
 @dataclass
@@ -80,10 +168,16 @@ class AgentActivityConfig:
     # 影响力权重（决定其发言被其他Agent看到的概率）
     influence_weight: float = 1.0
 
+    # 该Agent使用的LLM profile id（llm.router.assign_agent_profiles）
+    llm_profile: Optional[str] = None
+
+    # 人设原型 id（persona_archetypes），未启用时为 None
+    archetype: Optional[str] = None
+
 
 @dataclass  
 class TimeSimulationConfig:
-    """时间模拟配置（基于中国人作息习惯）"""
+    """时间模拟配置（默认值来自 zh-CN 地区作息，生成时按 REGION_PROFILES 覆盖）"""
     # 模拟总时长（模拟小时数）
     total_simulation_hours: int = 72  # 默认模拟72小时（3天）
     
@@ -94,7 +188,7 @@ class TimeSimulationConfig:
     agents_per_hour_min: int = 5
     agents_per_hour_max: int = 20
     
-    # 高峰时段（晚间19-22点，中国人最活跃的时间）
+    # 高峰时段（默认晚间19-22点）
     peak_hours: List[int] = field(default_factory=lambda: [19, 20, 21, 22])
     peak_activity_multiplier: float = 1.5
     
@@ -109,6 +203,12 @@ class TimeSimulationConfig:
     # 工作时段
     work_hours: List[int] = field(default_factory=lambda: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18])
     work_activity_multiplier: float = 0.7
+
+    # 地区作息来源
+    region: str = "zh-CN"
+    timezone: str = "Asia/Shanghai"
+    # 额外命名时段（如 commute / lunch / after_work）
+    routine_windows: Dict[str, List[int]] = field(default_factory=dict)
 
 
 @dataclass
@@ -169,6 +269,11 @@ class SimulationParameters:
     # LLM配置
     llm_model: str = ""
     llm_base_url: str = ""
+    # {profile_id: {"label", "model", "count"}}
+    llm_models: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+    # 人设原型混合 {"preset", "seed"}
+    persona_mix: Optional[Dict[str, Any]] = None
     
     # 生成元数据
     generated_at: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -189,6 +294,8 @@ class SimulationParameters:
             "reddit_config": asdict(self.reddit_config) if self.reddit_config else None,
             "llm_model": self.llm_model,
             "llm_base_url": self.llm_base_url,
+            "llm_models": self.llm_models,
+            "persona_mix": self.persona_mix,
             "generated_at": self.generated_at,
             "generation_reasoning": self.generation_reasoning,
         }
@@ -222,6 +329,11 @@ class SimulationConfigGenerator:
     ENTITY_SUMMARY_LENGTH = 300          # 实体摘要
     AGENT_SUMMARY_LENGTH = 300           # Agent配置中的实体摘要
     ENTITIES_PER_TYPE_DISPLAY = 20       # 每类实体显示数量
+
+    # 各步骤输出 token 上限
+    TIME_CONFIG_MAX_TOKENS = 1024
+    EVENT_CONFIG_MAX_TOKENS = 3072
+    AGENT_BATCH_MAX_TOKENS = 4096
     
     def __init__(
         self,
@@ -229,17 +341,27 @@ class SimulationConfigGenerator:
         base_url: Optional[str] = None,
         model_name: Optional[str] = None
     ):
-        self.api_key = api_key or Config.LLM_API_KEY
-        self.base_url = base_url or Config.LLM_BASE_URL
-        self.model_name = model_name or Config.LLM_MODEL_NAME
-        
-        if not self.api_key:
-            raise ValueError("LLM_API_KEY 未配置")
-        
-        self.client = OpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url
-        )
+        if api_key or base_url or model_name:
+            # 显式参数：临时 openai_compatible profile（与 LLMClient 相同语义）
+            self.profile = LLMProfile(
+                id="custom",
+                kind="openai_compatible",
+                label="Custom",
+                model=model_name or Config.LLM_MODEL_NAME,
+                base_url=base_url or Config.LLM_BASE_URL,
+                api_key=api_key or Config.LLM_API_KEY,
+            )
+        else:
+            self.profile = resolve_profile(LLM_STAGE)
+
+        if self.profile.kind == "openai_compatible" and not self.profile.api_key:
+            raise ValueError(t("errors.llmApiKeyMissing"))
+
+        self.api_key = self.profile.api_key
+        self.base_url = self.profile.base_url
+        self.model_name = self.profile.model
+        self.region = select_region()
+        self.region_profile = REGION_PROFILES[self.region]
     
     def generate_config(
         self,
@@ -252,6 +374,7 @@ class SimulationConfigGenerator:
         enable_twitter: bool = True,
         enable_reddit: bool = True,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        persona_mix: Optional[Dict[str, Any]] = None,
     ) -> SimulationParameters:
         """
         智能生成完整的模拟配置（分步生成）
@@ -266,11 +389,21 @@ class SimulationConfigGenerator:
             enable_twitter: 是否启用Twitter
             enable_reddit: 是否启用Reddit
             progress_callback: 进度回调函数(current_step, total_steps, message)
+            persona_mix: 人设原型混合 {"preset", "seed"}；None 表示不启用原型
             
         Returns:
             SimulationParameters: 完整的模拟参数
         """
         logger.info(f"开始智能生成模拟配置: simulation_id={simulation_id}, 实体数={len(entities)}")
+
+        # 地区作息按当前 locale 选择（后台线程需已 set_locale）
+        self.region = select_region()
+        self.region_profile = REGION_PROFILES[self.region]
+
+        # 人设原型分配（先于 LLM 调用，无效 preset 立即失败）
+        persona_mix = normalize_persona_mix(persona_mix, simulation_id)
+        agent_ids = list(range(len(entities)))
+        archetype_by_agent = assign_archetypes(agent_ids, persona_mix["preset"], persona_mix["seed"])
         
         # 计算总步骤数
         num_batches = math.ceil(len(entities) / self.AGENTS_PER_BATCH)
@@ -322,9 +455,14 @@ class SimulationConfigGenerator:
                 context=context,
                 entities=batch_entities,
                 start_idx=start_idx,
-                simulation_requirement=simulation_requirement
+                simulation_requirement=simulation_requirement,
+                archetype_by_agent=archetype_by_agent,
             )
             all_agent_configs.extend(batch_configs)
+
+        # 原型行为参数覆盖 + 每个Agent的LLM profile
+        self._apply_archetypes(all_agent_configs, archetype_by_agent)
+        llm_models, agent_profile = self._assign_llm_profiles(all_agent_configs, simulation_id)
         
         reasoning_parts.append(t('progress.agentConfigResult', count=len(all_agent_configs)))
         
@@ -370,14 +508,63 @@ class SimulationConfigGenerator:
             event_config=event_config,
             twitter_config=twitter_config,
             reddit_config=reddit_config,
-            llm_model=self.model_name,
-            llm_base_url=self.base_url,
+            llm_model=agent_profile.model,
+            llm_base_url=agent_profile.base_url or "",
+            llm_models=llm_models,
+            persona_mix=persona_mix,
             generation_reasoning=" | ".join(reasoning_parts)
         )
         
         logger.info(f"模拟配置生成完成: {len(params.agent_configs)} 个Agent配置")
         
         return params
+
+    def _apply_archetypes(
+        self,
+        agent_configs: List[AgentActivityConfig],
+        archetype_by_agent: Dict[int, Optional[str]],
+    ) -> None:
+        """Override persona-driven behavior (activity, hours, delay, sentiment) from the assigned archetype."""
+        for cfg in agent_configs:
+            archetype_id = archetype_by_agent.get(cfg.agent_id)
+            cfg.archetype = archetype_id
+            if not archetype_id:
+                continue
+            overrides = archetype_activity_overrides(archetype_id)
+            cfg.activity_level = overrides["activity_level"]
+            cfg.active_hours = list(overrides["active_hours"])
+            delay_min, delay_max = overrides["response_delay_minutes"]
+            cfg.response_delay_min = delay_min
+            cfg.response_delay_max = delay_max
+            cfg.sentiment_bias = overrides["sentiment_bias"]
+
+    def _assign_llm_profiles(
+        self,
+        agent_configs: List[AgentActivityConfig],
+        simulation_id: str,
+    ) -> "tuple[Dict[str, Dict[str, Any]], LLMProfile]":
+        """Assign each agent a profile from the agent pool (seeded by simulation id) and summarize the mix."""
+        settings: LLMSettings = load_settings()
+        agent_ids = [cfg.agent_id for cfg in agent_configs]
+        if settings.agent_pool:
+            mapping = assign_agent_profiles(agent_ids, seed=simulation_id, settings=settings)
+            profiles = {pid: settings.profile(pid) for pid in set(mapping.values())}
+            route_profile = resolve_profile("simulation_agent", settings)
+        else:
+            # 仅显式参数构造（无环境 profile）：所有Agent使用该 profile
+            mapping = {agent_id: self.profile.id for agent_id in agent_ids}
+            profiles = {self.profile.id: self.profile}
+            route_profile = self.profile
+
+        llm_models: Dict[str, Dict[str, Any]] = {}
+        for cfg in agent_configs:
+            pid = mapping[cfg.agent_id]
+            cfg.llm_profile = pid
+            entry = llm_models.setdefault(
+                pid, {"label": profiles[pid].label, "model": profiles[pid].model, "count": 0}
+            )
+            entry["count"] += 1
+        return llm_models, route_profile
     
     def _build_context(
         self,
@@ -392,8 +579,8 @@ class SimulationConfigGenerator:
         
         # 构建上下文
         context_parts = [
-            f"## 模拟需求\n{simulation_requirement}",
-            f"\n## 实体信息 ({len(entities)}个)\n{entity_summary}",
+            f"## Simulation requirement\n{simulation_requirement}",
+            f"\n## Entities ({len(entities)})\n{entity_summary}",
         ]
         
         current_length = sum(len(p) for p in context_parts)
@@ -402,8 +589,8 @@ class SimulationConfigGenerator:
         if remaining_length > 0 and document_text:
             doc_text = document_text[:remaining_length]
             if len(document_text) > remaining_length:
-                doc_text += "\n...(文档已截断)"
-            context_parts.append(f"\n## 原始文档内容\n{doc_text}")
+                doc_text += "\n...(document truncated)"
+            context_parts.append(f"\n## Source document\n{doc_text}")
         
         return "\n".join(context_parts)
     
@@ -420,7 +607,7 @@ class SimulationConfigGenerator:
             by_type[t].append(e)
         
         for entity_type, type_entities in by_type.items():
-            lines.append(f"\n### {entity_type} ({len(type_entities)}个)")
+            lines.append(f"\n### {entity_type} ({len(type_entities)})")
             # 使用配置的显示数量和摘要长度
             display_count = self.ENTITIES_PER_TYPE_DISPLAY
             summary_len = self.ENTITY_SUMMARY_LENGTH
@@ -428,58 +615,66 @@ class SimulationConfigGenerator:
                 summary_preview = (e.summary[:summary_len] + "...") if len(e.summary) > summary_len else e.summary
                 lines.append(f"- {e.name}: {summary_preview}")
             if len(type_entities) > display_count:
-                lines.append(f"  ... 还有 {len(type_entities) - display_count} 个")
+                lines.append(f"  ... and {len(type_entities) - display_count} more")
         
         return "\n".join(lines)
     
-    def _call_llm_with_retry(self, prompt: str, system_prompt: str) -> Dict[str, Any]:
-        """带重试的LLM调用，包含JSON修复逻辑"""
-        import re
-        
+    def _call_llm_with_retry(self, prompt: str, system_prompt: str, max_tokens: int) -> Dict[str, Any]:
+        """带重试的LLM调用（stage=config），包含JSON修复逻辑"""
         max_attempts = 3
         last_error = None
-        
-        for attempt in range(max_attempts):
+        response_format: Optional[Dict[str, str]] = {"type": "json_object"}
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+
+        attempt = 0
+        while attempt < max_attempts:
             try:
-                response = create_chat_completion(
-                    self.client,
-                    model=self.model_name,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt}
-                    ],
-                    response_format={"type": "json_object"},
+                response = create_completion(
+                    self.profile,
+                    stage=LLM_STAGE,
+                    messages=messages,
+                    response_format=response_format,
                     temperature=0.7 - (attempt * 0.1),  # 每次重试降低温度
-                    # 不设置max_tokens，让LLM自由发挥
+                    max_tokens=max_tokens,
                 )
-                
-                content = extract_chat_completion_text(response)
-                finish_reason = response.choices[0].finish_reason
-                
-                # 检查是否被截断
-                if finish_reason == 'length':
-                    logger.warning(f"LLM输出被截断 (attempt {attempt+1})")
-                    content = self._fix_truncated_json(content)
-                
-                # 尝试解析JSON
-                try:
-                    return json.loads(content)
-                except json.JSONDecodeError as e:
-                    logger.warning(f"JSON解析失败 (attempt {attempt+1}): {str(e)[:80]}")
-                    
-                    # 尝试修复JSON
-                    fixed = self._try_fix_config_json(content)
-                    if fixed:
-                        return fixed
-                    
-                    last_error = e
-                    
             except Exception as e:
+                if response_format is not None and is_response_format_unsupported(e):
+                    # provider 明确不支持 JSON 模式：降级一次，不计入尝试次数
+                    logger.warning("LLM provider rejected response_format; retrying with prompt-only JSON")
+                    response_format = None
+                    continue
                 logger.warning(f"LLM调用失败 (attempt {attempt+1}): {str(e)[:80]}")
                 last_error = e
-                import time
-                time.sleep(2 * (attempt + 1))
-        
+                attempt += 1
+                if attempt < max_attempts:
+                    time.sleep(2 * attempt)
+                continue
+
+            content = extract_chat_completion_text(response)
+            finish_reason = response.choices[0].finish_reason
+
+            # 检查是否被截断
+            if finish_reason == 'length':
+                logger.warning(f"LLM输出被截断 (attempt {attempt+1})")
+                content = self._fix_truncated_json(content)
+
+            # 尝试解析JSON
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError as e:
+                logger.warning(f"JSON解析失败 (attempt {attempt+1}): {str(e)[:80]}")
+
+                # 尝试修复JSON
+                fixed = self._try_fix_config_json(content)
+                if fixed:
+                    return fixed
+
+                last_error = e
+                attempt += 1
+
         raise last_error or Exception("LLM调用失败")
     
     def _fix_truncated_json(self, content: str) -> str:
@@ -534,84 +729,90 @@ class SimulationConfigGenerator:
         
         return None
     
+    TIME_CONFIG_SYSTEM_PROMPT = """You are a social media simulation expert. Design the time configuration for a multi-agent social media simulation.
+
+Rules:
+- Infer the time zone and daily routine of the target population from the scenario. If the scenario does not name a region, follow the reference daily routine provided in the request.
+- General pattern: very low activity late at night, rising in the morning, moderate during working hours, highest in the evening peak.
+- Adapt the windows to the event and the participants: students may peak late in the evening, media are active most of the day, official institutions mostly during working hours, and breaking news can keep people talking late at night (shorten off_peak_hours then).
+- Hours are local integers 0-23.
+
+Return only a JSON object (no markdown) with exactly these fields:
+- total_simulation_hours (int): 24-168; short for breaking events, longer for ongoing topics
+- minutes_per_round (int): 30-120, 60 recommended
+- agents_per_hour_min (int): minimum agents activated per hour, within the allowed range given in the request
+- agents_per_hour_max (int): maximum agents activated per hour, within the allowed range given in the request
+- peak_hours (int array): peak activity hours
+- off_peak_hours (int array): lowest activity hours, usually late night
+- morning_hours (int array): morning hours
+- work_hours (int array): working hours
+- reasoning (string): a short explanation of the choices
+
+Example:
+{"total_simulation_hours": 72, "minutes_per_round": 60, "agents_per_hour_min": 5, "agents_per_hour_max": 50, "peak_hours": [19, 20, 21, 22], "off_peak_hours": [0, 1, 2, 3, 4, 5], "morning_hours": [6, 7, 8], "work_hours": [9, 10, 11, 12, 13, 14, 15, 16, 17, 18], "reasoning": "..."}"""
+
+    def _region_routine_text(self) -> str:
+        """Reference daily routine of the selected region (dynamic, goes in the user message)."""
+        rp = self.region_profile
+        m = rp["activity_multipliers"]
+        tz = rp["timezone"] if rp["utc_offset"] is None else f"{rp['timezone']}, UTC{rp['utc_offset']}"
+        lines = [
+            f"## Reference daily routine (region {self.region}, time zone {tz})",
+            f"- off-peak / almost no activity (multiplier {m['dead']}): {rp['dead_hours']}",
+            f"- morning (multiplier {m['morning']}): {rp['morning_hours']}",
+            f"- working hours (multiplier {m['work']}): {rp['work_hours']}",
+            f"- evening peak (multiplier {m['peak']}): {rp['peak_hours']}",
+            f"- late night (multiplier {m['night']}): {rp['night_hours']}",
+        ]
+        for name, hours in rp["routine_windows"].items():
+            lines.append(f"- {name.replace('_', ' ')} window (activity bump): {hours}")
+        return "\n".join(lines)
+
     def _generate_time_config(self, context: str, num_entities: int) -> Dict[str, Any]:
         """生成时间配置"""
         # 使用配置的上下文截断长度
         context_truncated = context[:self.TIME_CONFIG_CONTEXT_LENGTH]
         
-        # 计算最大允许值（80%的agent数）
+        # 计算最大允许值（90%的agent数）
         max_agents_allowed = max(1, int(num_entities * 0.9))
         
-        prompt = f"""基于以下模拟需求，生成时间模拟配置。
+        prompt = f"""{context_truncated}
 
-{context_truncated}
+{self._region_routine_text()}
 
-## 任务
-请生成时间配置JSON。
+## Constraints
+- Total agents: {num_entities}
+- agents_per_hour_min and agents_per_hour_max must be between 1 and {max_agents_allowed}
 
-### 基本原则（仅供参考，需根据具体事件和参与群体灵活调整）：
-- 请根据模拟场景推断目标用户群体所在时区和作息习惯，以下为东八区(UTC+8)的参考示例
-- 凌晨0-5点几乎无人活动（活跃度系数0.05）
-- 早上6-8点逐渐活跃（活跃度系数0.4）
-- 工作时间9-18点中等活跃（活跃度系数0.7）
-- 晚间19-22点是高峰期（活跃度系数1.5）
-- 23点后活跃度下降（活跃度系数0.5）
-- 一般规律：凌晨低活跃、早间渐增、工作时段中等、晚间高峰
-- **重要**：以下示例值仅供参考，你需要根据事件性质、参与群体特点来调整具体时段
-  - 例如：学生群体高峰可能是21-23点；媒体全天活跃；官方机构只在工作时间
-  - 例如：突发热点可能导致深夜也有讨论，off_peak_hours 可适当缩短
+Generate the time configuration JSON."""
 
-### 返回JSON格式（不要markdown）
-
-示例：
-{{
-    "total_simulation_hours": 72,
-    "minutes_per_round": 60,
-    "agents_per_hour_min": 5,
-    "agents_per_hour_max": 50,
-    "peak_hours": [19, 20, 21, 22],
-    "off_peak_hours": [0, 1, 2, 3, 4, 5],
-    "morning_hours": [6, 7, 8],
-    "work_hours": [9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
-    "reasoning": "针对该事件的时间配置说明"
-}}
-
-字段说明：
-- total_simulation_hours (int): 模拟总时长，24-168小时，突发事件短、持续话题长
-- minutes_per_round (int): 每轮时长，30-120分钟，建议60分钟
-- agents_per_hour_min (int): 每小时最少激活Agent数（取值范围: 1-{max_agents_allowed}）
-- agents_per_hour_max (int): 每小时最多激活Agent数（取值范围: 1-{max_agents_allowed}）
-- peak_hours (int数组): 高峰时段，根据事件参与群体调整
-- off_peak_hours (int数组): 低谷时段，通常深夜凌晨
-- morning_hours (int数组): 早间时段
-- work_hours (int数组): 工作时段
-- reasoning (string): 简要说明为什么这样配置"""
-
-        system_prompt = "你是社交媒体模拟专家。返回纯JSON格式，时间配置需符合模拟场景中目标用户群体的作息习惯。"
-        system_prompt = f"{system_prompt}\n\n{get_language_instruction()}"
+        system_prompt = f"{self.TIME_CONFIG_SYSTEM_PROMPT}\n\n{get_language_instruction()}"
 
         try:
-            return self._call_llm_with_retry(prompt, system_prompt)
+            return self._call_llm_with_retry(prompt, system_prompt, self.TIME_CONFIG_MAX_TOKENS)
         except Exception as e:
             logger.warning(f"时间配置LLM生成失败: {e}, 使用默认配置")
             return self._get_default_time_config(num_entities)
     
     def _get_default_time_config(self, num_entities: int) -> Dict[str, Any]:
-        """获取默认时间配置（中国人作息）"""
+        """获取默认时间配置（当前地区作息）"""
+        rp = self.region_profile
         return {
             "total_simulation_hours": 72,
             "minutes_per_round": 60,  # 每轮1小时，加快时间流速
             "agents_per_hour_min": max(1, num_entities // 15),
             "agents_per_hour_max": max(5, num_entities // 5),
-            "peak_hours": [19, 20, 21, 22],
-            "off_peak_hours": [0, 1, 2, 3, 4, 5],
-            "morning_hours": [6, 7, 8],
-            "work_hours": [9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
-            "reasoning": "使用默认中国人作息配置（每轮1小时）"
+            "peak_hours": list(rp["peak_hours"]),
+            "off_peak_hours": list(rp["dead_hours"]),
+            "morning_hours": list(rp["morning_hours"]),
+            "work_hours": list(rp["work_hours"]),
+            "reasoning": t('progress.defaultTimeConfigReasoning', region=self.region)
         }
     
     def _parse_time_config(self, result: Dict[str, Any], num_entities: int) -> TimeSimulationConfig:
         """解析时间配置结果，并验证agents_per_hour值不超过总agent数"""
+        rp = self.region_profile
+        multipliers = rp["activity_multipliers"]
         # 获取原始值
         agents_per_hour_min = result.get("agents_per_hour_min", max(1, num_entities // 15))
         agents_per_hour_max = result.get("agents_per_hour_max", max(5, num_entities // 5))
@@ -635,16 +836,33 @@ class SimulationConfigGenerator:
             minutes_per_round=result.get("minutes_per_round", 60),  # 默认每轮1小时
             agents_per_hour_min=agents_per_hour_min,
             agents_per_hour_max=agents_per_hour_max,
-            peak_hours=result.get("peak_hours", [19, 20, 21, 22]),
-            off_peak_hours=result.get("off_peak_hours", [0, 1, 2, 3, 4, 5]),
-            off_peak_activity_multiplier=0.05,  # 凌晨几乎无人
-            morning_hours=result.get("morning_hours", [6, 7, 8]),
-            morning_activity_multiplier=0.4,
-            work_hours=result.get("work_hours", list(range(9, 19))),
-            work_activity_multiplier=0.7,
-            peak_activity_multiplier=1.5
+            peak_hours=result.get("peak_hours", list(rp["peak_hours"])),
+            off_peak_hours=result.get("off_peak_hours", list(rp["dead_hours"])),
+            off_peak_activity_multiplier=multipliers["dead"],
+            morning_hours=result.get("morning_hours", list(rp["morning_hours"])),
+            morning_activity_multiplier=multipliers["morning"],
+            work_hours=result.get("work_hours", list(rp["work_hours"])),
+            work_activity_multiplier=multipliers["work"],
+            peak_activity_multiplier=multipliers["peak"],
+            region=self.region,
+            timezone=rp["timezone"],
+            routine_windows={k: list(v) for k, v in rp["routine_windows"].items()},
         )
     
+    EVENT_CONFIG_SYSTEM_PROMPT = """You are a public opinion analyst. Design the event configuration for a social media simulation.
+
+Tasks:
+- Extract hot topic keywords.
+- Describe how public opinion is likely to develop.
+- Write the initial posts that start the simulation. Every post must name its poster_type.
+
+Rules:
+- poster_type MUST exactly match one of the available entity types listed in the request, written in English PascalCase as given, so the post can be assigned to a fitting agent. For example, official statements come from Official/University types, news from MediaOutlet, student opinions from Student.
+- Only content, narrative_direction, hot_topics and reasoning are natural-language text; JSON field names stay unchanged.
+
+Return only a JSON object (no markdown):
+{"hot_topics": ["keyword1", "keyword2"], "narrative_direction": "<how opinion develops>", "initial_posts": [{"content": "<post text>", "poster_type": "<one of the available entity types>"}], "reasoning": "<short explanation>"}"""
+
     def _generate_event_config(
         self, 
         context: str, 
@@ -675,47 +893,24 @@ class SimulationConfigGenerator:
         # 使用配置的上下文截断长度
         context_truncated = context[:self.EVENT_CONFIG_CONTEXT_LENGTH]
         
-        prompt = f"""基于以下模拟需求，生成事件配置。
+        prompt = f"""{context_truncated}
 
-模拟需求: {simulation_requirement}
-
-{context_truncated}
-
-## 可用实体类型及示例
+## Available entity types (with examples)
 {type_info}
 
-## 任务
-请生成事件配置JSON：
-- 提取热点话题关键词
-- 描述舆论发展方向
-- 设计初始帖子内容，**每个帖子必须指定 poster_type（发布者类型）**
+Generate the event configuration JSON."""
 
-**重要**: poster_type 必须从上面的"可用实体类型"中选择，这样初始帖子才能分配给合适的 Agent 发布。
-例如：官方声明应由 Official/University 类型发布，新闻由 MediaOutlet 发布，学生观点由 Student 发布。
-
-返回JSON格式（不要markdown）：
-{{
-    "hot_topics": ["关键词1", "关键词2", ...],
-    "narrative_direction": "<舆论发展方向描述>",
-    "initial_posts": [
-        {{"content": "帖子内容", "poster_type": "实体类型（必须从可用类型中选择）"}},
-        ...
-    ],
-    "reasoning": "<简要说明>"
-}}"""
-
-        system_prompt = "你是舆论分析专家。返回纯JSON格式。注意 poster_type 必须精确匹配可用实体类型。"
-        system_prompt = f"{system_prompt}\n\n{get_language_instruction()}\nIMPORTANT: The 'poster_type' field value MUST be in English PascalCase exactly matching the available entity types. Only 'content', 'narrative_direction', 'hot_topics' and 'reasoning' fields should use the specified language."
+        system_prompt = f"{self.EVENT_CONFIG_SYSTEM_PROMPT}\n\n{get_language_instruction()}"
 
         try:
-            return self._call_llm_with_retry(prompt, system_prompt)
+            return self._call_llm_with_retry(prompt, system_prompt, self.EVENT_CONFIG_MAX_TOKENS)
         except Exception as e:
             logger.warning(f"事件配置LLM生成失败: {e}, 使用默认配置")
             return {
                 "hot_topics": [],
                 "narrative_direction": "",
                 "initial_posts": [],
-                "reasoning": "使用默认配置"
+                "reasoning": t('progress.defaultEventConfigReasoning')
             }
     
     def _parse_event_config(self, result: Dict[str, Any]) -> EventConfig:
@@ -812,67 +1007,66 @@ class SimulationConfigGenerator:
         event_config.initial_posts = updated_posts
         return event_config
     
+    AGENT_CONFIG_SYSTEM_PROMPT = """You are a social media behavior analyst. Generate a social media activity configuration for each entity in the request.
+
+Guidelines (adapt to the scenario; active hours follow the reference daily routine of the target population given in the request):
+- Official institutions (University/GovernmentAgency): low activity (0.1-0.3), active during local working hours, slow responses (60-240 minutes), high influence (2.5-3.0)
+- Media (MediaOutlet): medium activity (0.4-0.6), active most of the waking day, fast responses (5-30 minutes), high influence (2.0-2.5)
+- Individuals (Student/Person/Alumni): high activity (0.6-0.9), mainly in the evening peak and commute/lunch breaks, fast responses (1-15 minutes), low influence (0.8-1.2)
+- Public figures/experts: medium activity (0.4-0.6), medium-high influence (1.5-2.0)
+- When an entity has an "archetype", keep stance, posting and commenting frequency consistent with it.
+
+Rules:
+- agent_id must equal the input agent_id.
+- stance MUST be one of the English strings: "supportive", "opposing", "neutral", "observer".
+- Keep all JSON field names and numeric values as specified; hours are local integers 0-23.
+
+Return only a JSON object (no markdown):
+{"agent_configs": [{"agent_id": 0, "activity_level": 0.5, "posts_per_hour": 0.5, "comments_per_hour": 1.0, "active_hours": [8, 12, 19, 20, 21], "response_delay_min": 5, "response_delay_max": 60, "sentiment_bias": 0.0, "stance": "neutral", "influence_weight": 1.0}]}
+Field meanings: activity_level 0.0-1.0; posts_per_hour and comments_per_hour are expected counts per hour; response_delay_min/max in minutes; sentiment_bias -1.0 (negative) to 1.0 (positive)."""
+
     def _generate_agent_configs_batch(
         self,
         context: str,
         entities: List[EntityNode],
         start_idx: int,
-        simulation_requirement: str
+        simulation_requirement: str,
+        archetype_by_agent: Optional[Dict[int, Optional[str]]] = None,
     ) -> List[AgentActivityConfig]:
         """分批生成Agent配置"""
         
         # 构建实体信息（使用配置的摘要长度）
         entity_list = []
         summary_len = self.AGENT_SUMMARY_LENGTH
+        archetype_by_agent = archetype_by_agent or {}
         for i, e in enumerate(entities):
-            entity_list.append({
+            item = {
                 "agent_id": start_idx + i,
                 "entity_name": e.name,
                 "entity_type": e.get_entity_type() or "Unknown",
                 "summary": e.summary[:summary_len] if e.summary else ""
-            })
+            }
+            archetype_id = archetype_by_agent.get(start_idx + i)
+            if archetype_id:
+                item["archetype"] = get_archetype(archetype_id)["traits_en"]
+            entity_list.append(item)
         
-        prompt = f"""基于以下信息，为每个实体生成社交媒体活动配置。
+        prompt = f"""## Simulation requirement
+{simulation_requirement}
 
-模拟需求: {simulation_requirement}
+{self._region_routine_text()}
 
-## 实体列表
+## Entities
 ```json
 {json.dumps(entity_list, ensure_ascii=False, indent=2)}
 ```
 
-## 任务
-为每个实体生成活动配置，注意：
-- **时间符合目标用户群体作息**：以下为参考（东八区），请根据模拟场景调整
-- **官方机构**（University/GovernmentAgency）：活跃度低(0.1-0.3)，工作时间(9-17)活动，响应慢(60-240分钟)，影响力高(2.5-3.0)
-- **媒体**（MediaOutlet）：活跃度中(0.4-0.6)，全天活动(8-23)，响应快(5-30分钟)，影响力高(2.0-2.5)
-- **个人**（Student/Person/Alumni）：活跃度高(0.6-0.9)，主要晚间活动(18-23)，响应快(1-15分钟)，影响力低(0.8-1.2)
-- **公众人物/专家**：活跃度中(0.4-0.6)，影响力中高(1.5-2.0)
+Generate the activity configuration JSON for every entity above."""
 
-返回JSON格式（不要markdown）：
-{{
-    "agent_configs": [
-        {{
-            "agent_id": <必须与输入一致>,
-            "activity_level": <0.0-1.0>,
-            "posts_per_hour": <发帖频率>,
-            "comments_per_hour": <评论频率>,
-            "active_hours": [<活跃小时列表，考虑中国人作息>],
-            "response_delay_min": <最小响应延迟分钟>,
-            "response_delay_max": <最大响应延迟分钟>,
-            "sentiment_bias": <-1.0到1.0>,
-            "stance": "<supportive/opposing/neutral/observer>",
-            "influence_weight": <影响力权重>
-        }},
-        ...
-    ]
-}}"""
-
-        system_prompt = "你是社交媒体行为分析专家。返回纯JSON，配置需符合模拟场景中目标用户群体的作息习惯。"
-        system_prompt = f"{system_prompt}\n\n{get_language_instruction()}\nIMPORTANT: The 'stance' field value MUST be one of the English strings: 'supportive', 'opposing', 'neutral', 'observer'. All JSON field names and numeric values must remain unchanged. Only natural language text fields should use the specified language."
+        system_prompt = f"{self.AGENT_CONFIG_SYSTEM_PROMPT}\n\n{get_language_instruction()}"
 
         try:
-            result = self._call_llm_with_retry(prompt, system_prompt)
+            result = self._call_llm_with_retry(prompt, system_prompt, self.AGENT_BATCH_MAX_TOKENS)
             llm_configs = {cfg["agent_id"]: cfg for cfg in result.get("agent_configs", [])}
         except Exception as e:
             logger.warning(f"Agent配置批次LLM生成失败: {e}, 使用规则生成")
@@ -907,8 +1101,11 @@ class SimulationConfigGenerator:
         
         return configs
     
+    def _rule_hours(self, kind: str) -> List[int]:
+        return list(self.region_profile["rule_active_hours"][kind])
+
     def _generate_agent_config_by_rule(self, entity: EntityNode) -> Dict[str, Any]:
-        """基于规则生成单个Agent配置（中国人作息）"""
+        """基于规则生成单个Agent配置（当前地区作息）"""
         entity_type = (entity.get_entity_type() or "Unknown").lower()
         
         if entity_type in ["university", "governmentagency", "ngo"]:
@@ -917,7 +1114,7 @@ class SimulationConfigGenerator:
                 "activity_level": 0.2,
                 "posts_per_hour": 0.1,
                 "comments_per_hour": 0.05,
-                "active_hours": list(range(9, 18)),  # 9:00-17:59
+                "active_hours": self._rule_hours("institution"),
                 "response_delay_min": 60,
                 "response_delay_max": 240,
                 "sentiment_bias": 0.0,
@@ -930,7 +1127,7 @@ class SimulationConfigGenerator:
                 "activity_level": 0.5,
                 "posts_per_hour": 0.8,
                 "comments_per_hour": 0.3,
-                "active_hours": list(range(7, 24)),  # 7:00-23:59
+                "active_hours": self._rule_hours("media"),
                 "response_delay_min": 5,
                 "response_delay_max": 30,
                 "sentiment_bias": 0.0,
@@ -943,7 +1140,7 @@ class SimulationConfigGenerator:
                 "activity_level": 0.4,
                 "posts_per_hour": 0.3,
                 "comments_per_hour": 0.5,
-                "active_hours": list(range(8, 22)),  # 8:00-21:59
+                "active_hours": self._rule_hours("expert"),
                 "response_delay_min": 15,
                 "response_delay_max": 90,
                 "sentiment_bias": 0.0,
@@ -956,7 +1153,7 @@ class SimulationConfigGenerator:
                 "activity_level": 0.8,
                 "posts_per_hour": 0.6,
                 "comments_per_hour": 1.5,
-                "active_hours": [8, 9, 10, 11, 12, 13, 18, 19, 20, 21, 22, 23],  # 上午+晚间
+                "active_hours": self._rule_hours("student"),
                 "response_delay_min": 1,
                 "response_delay_max": 15,
                 "sentiment_bias": 0.0,
@@ -969,7 +1166,7 @@ class SimulationConfigGenerator:
                 "activity_level": 0.6,
                 "posts_per_hour": 0.4,
                 "comments_per_hour": 0.8,
-                "active_hours": [12, 13, 19, 20, 21, 22, 23],  # 午休+晚间
+                "active_hours": self._rule_hours("alumni"),
                 "response_delay_min": 5,
                 "response_delay_max": 30,
                 "sentiment_bias": 0.0,
@@ -982,7 +1179,7 @@ class SimulationConfigGenerator:
                 "activity_level": 0.7,
                 "posts_per_hour": 0.5,
                 "comments_per_hour": 1.2,
-                "active_hours": [9, 10, 11, 12, 13, 18, 19, 20, 21, 22, 23],  # 白天+晚间
+                "active_hours": self._rule_hours("person"),
                 "response_delay_min": 2,
                 "response_delay_max": 20,
                 "sentiment_bias": 0.0,

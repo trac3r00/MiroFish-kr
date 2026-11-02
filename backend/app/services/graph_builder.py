@@ -25,6 +25,8 @@ from ..utils.zep import (
     ZEP_INGESTION_WAIT_TIMEOUT_SECONDS,
     call_zep_read_with_retry,
     get_zep_client,
+    graph_backend_ready,
+    graph_backend_error,
     is_retryable_zep_error,
 )
 from .text_processor import TextProcessor
@@ -66,10 +68,9 @@ class GraphBuilderService:
     
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or Config.ZEP_API_KEY
-        if not self.api_key:
-            raise ValueError("ZEP_API_KEY 未配置")
-        
-        self.client = get_zep_client(self.api_key)
+        if not graph_backend_ready():
+            raise ValueError(graph_backend_error())
+        self.client = get_zep_client(self.api_key or None)
         self.task_manager = TaskManager()
     
     def build_graph_async(

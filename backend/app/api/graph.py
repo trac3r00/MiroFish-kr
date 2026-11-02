@@ -5,6 +5,7 @@
 
 import os
 import re
+import hashlib
 import traceback
 import threading
 from contextlib import ExitStack, nullcontext
@@ -26,6 +27,7 @@ from ..services.simulation_manager import SimulationManager
 from ..services.simulation_runner import SimulationRunner, RunnerStatus
 from ..services.zep_graph_memory_updater import ZepGraphMemoryManager
 from ..utils.llm_client import LLMResponseError
+from ..utils.zep import graph_backend_ready, graph_backend_error
 
 # 获取日志器
 logger = get_logger('mirofish.api')
@@ -88,10 +90,11 @@ def _delete_cloud_graph_if_present(graph_id: str | None) -> None:
                 f"Graph {graph_id} is in use by active consumer(s): "
                 f"{', '.join(active_simulations)}"
             )
-        try:
-            GraphBuilderService(api_key=Config.ZEP_API_KEY).delete_graph(graph_id)
-        except NotFoundError:
-            logger.info("Zep Cloud graph already absent: %s", graph_id)
+        if graph_backend_ready():
+            try:
+                GraphBuilderService().delete_graph(graph_id)
+            except NotFoundError:
+                logger.info("Zep Cloud graph already absent: %s", graph_id)
 
 
 def _clear_project_graph_reference(project) -> None:
@@ -417,7 +420,7 @@ def generate_ontology():
                 request_id or "unknown",
             )
         else:
-            public_error = "Ontology generation failed; check the server logs"
+            public_error = t('api.graph.ontologyGenerationFailed')
             response_status = 500
             logger.exception("Unexpected ontology generation failure")
 
@@ -483,14 +486,10 @@ def _build_graph_impl():
         logger.info("=== 开始构建图谱 ===")
         
         # 检查配置
-        errors = []
-        if not Config.ZEP_API_KEY:
-            errors.append(t('api.zepApiKeyMissing'))
-        if errors:
-            logger.error(f"配置错误: {errors}")
+        if not graph_backend_ready():
             return jsonify({
                 "success": False,
-                "error": t('api.configError', details="; ".join(errors))
+                "error": graph_backend_error()
             }), 500
         
         # 解析请求
@@ -546,7 +545,7 @@ def _build_graph_impl():
                 and project.zep_batch_id
                 and project.zep_batch_operation_id
             ):
-                builder = GraphBuilderService(api_key=Config.ZEP_API_KEY)
+                builder = GraphBuilderService()
                 batch_summary = builder.get_batch_summary(project.zep_batch_id)
                 if getattr(batch_summary, "status", None) in {
                     "queued",
@@ -587,7 +586,10 @@ def _build_graph_impl():
         chunk_size = data.get('chunk_size', project.chunk_size or Config.DEFAULT_CHUNK_SIZE)
         chunk_overlap = data.get('chunk_overlap', project.chunk_overlap or Config.DEFAULT_CHUNK_OVERLAP)
         if not isinstance(chunk_size, int) or chunk_size <= 0:
-            return jsonify({"success": False, "error": "chunk_size must be a positive integer"}), 400
+            return jsonify({
+                "success": False,
+                "error": t('api.graph.chunkSizeMustBePositive'),
+            }), 400
         if (
             not isinstance(chunk_overlap, int)
             or chunk_overlap < 0
@@ -636,7 +638,9 @@ def _build_graph_impl():
         
         # 创建异步任务
         task_manager = TaskManager()
-        task_id = task_manager.create_task(f"构建图谱: {graph_name}")
+        task_id = task_manager.create_task(
+            t('progress.graphBuildTask', graph_name=graph_name)
+        )
         logger.info(f"创建图谱构建任务: task_id={task_id}, project_id={project_id}")
         
         # 更新项目状态
@@ -660,7 +664,7 @@ def _build_graph_impl():
                 )
                 
                 # 创建图谱构建服务
-                builder = GraphBuilderService(api_key=Config.ZEP_API_KEY)
+                builder = GraphBuilderService()
                 
                 # 分块
                 task_manager.update_task(
@@ -882,19 +886,21 @@ def get_graph_data(graph_id: str):
     获取图谱数据（节点和边）
     """
     try:
-        if not Config.ZEP_API_KEY:
+        if not graph_backend_ready():
             return jsonify({
                 "success": False,
-                "error": t('api.zepApiKeyMissing')
+                "error": graph_backend_error()
             }), 500
         
-        builder = GraphBuilderService(api_key=Config.ZEP_API_KEY)
+        builder = GraphBuilderService()
         graph_data = builder.get_graph_data(graph_id)
         
-        return jsonify({
+        response = jsonify({
             "success": True,
             "data": graph_data
         })
+        response.set_etag(hashlib.sha256(response.get_data()).hexdigest())
+        return response.make_conditional(request)
         
     except Exception as e:
         return jsonify({
@@ -910,17 +916,17 @@ def delete_graph(graph_id: str):
     删除Zep图谱
     """
     try:
-        if not Config.ZEP_API_KEY:
+        if not graph_backend_ready():
             return jsonify({
                 "success": False,
-                "error": t('api.zepApiKeyMissing')
+                "error": graph_backend_error()
             }), 500
         
         projects = ProjectManager.find_projects_by_graph_id(graph_id)
         if not projects:
             return jsonify({
                 "success": False,
-                "error": "No local project references this graph"
+                "error": t('api.graph.noProjectReferencesGraph')
             }), 404
         project_ids = sorted({project.project_id for project in projects})
         with ExitStack() as stack:

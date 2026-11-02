@@ -127,7 +127,7 @@ def generate_report():
         if project.status != ProjectStatus.GRAPH_COMPLETED:
             return jsonify({
                 "success": False,
-                "error": "The project graph must be completely built before reporting",
+                "error": t('api.report.graphMustBeBuilt'),
             }), 409
 
         graph_id = project.graph_id
@@ -181,7 +181,7 @@ def generate_report():
             ):
                 return jsonify({
                     "success": False,
-                    "error": "The project graph changed while reporting was starting",
+                    "error": t('api.report.graphChangedWhileStarting'),
                 }), 409
             if refreshed_updater is not None or (
                 refreshed_run_state is not None

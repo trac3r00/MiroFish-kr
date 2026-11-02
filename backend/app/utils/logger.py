@@ -6,6 +6,8 @@
 import os
 import sys
 import logging
+import json
+import re
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
@@ -25,6 +27,25 @@ def _ensure_utf8_stdout():
 
 # 日志目录
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs')
+_SENSITIVE_KEY = re.compile(r"key|token|secret|password|authorization", re.IGNORECASE)
+
+
+def format_request_body(body, max_chars: int = 2000) -> str:
+    """Serialize JSON for debug logs with sensitive values redacted and capped."""
+    def redact(value):
+        if isinstance(value, dict):
+            return {
+                key: "***" if _SENSITIVE_KEY.search(str(key)) else redact(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        return value
+
+    serialized = json.dumps(redact(body), ensure_ascii=False, separators=(",", ":"))
+    if len(serialized) > max_chars:
+        return serialized[:max_chars] + "... [truncated]"
+    return serialized
 
 
 def setup_logger(name: str = 'mirofish', level: int = logging.DEBUG) -> logging.Logger:

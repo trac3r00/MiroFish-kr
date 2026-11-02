@@ -58,3 +58,5 @@ backend/uploads/
 
 # Docker 数据
 data/
+# Bundled persona archetype catalogs (source, not runtime data)
+!backend/app/data/

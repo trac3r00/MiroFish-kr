@@ -12,6 +12,8 @@ import threading
 import subprocess
 import signal
 import atexit
+import uuid
+from array import array
 from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -20,7 +22,7 @@ from queue import Queue
 
 from ..config import Config
 from ..utils.logger import get_logger
-from ..utils.locale import get_locale, set_locale
+from ..utils.locale import get_locale, set_locale, t
 from ..utils.zep import (
     ZEP_HTTP_REQUEST_TIMEOUT_SECONDS,
     ZEP_INGESTION_WAIT_TIMEOUT_SECONDS,
@@ -29,6 +31,14 @@ from .zep_graph_memory_updater import ZepGraphMemoryManager
 from .simulation_ipc import SimulationIPCClient, CommandType, IPCResponse
 
 logger = get_logger('mirofish.simulation_runner')
+
+
+def t_detail(key: str, **kwargs) -> str:
+    """``t()`` that keeps dynamic details if ``key`` is not in the locales yet."""
+    text = t(key, **kwargs)
+    if text == key and kwargs:
+        return f"{key}: " + ", ".join(str(value) for value in kwargs.values())
+    return text
 
 # 标记是否已注册清理函数
 _cleanup_registered = False
@@ -201,6 +211,204 @@ class SimulationRunState:
         return result
 
 
+# Platform order used to break timestamp ties inside one refresh batch.
+_ACTION_LOG_PLATFORMS = ("twitter", "reddit")
+
+
+class _ActionLogIndex:
+    """Cursor index over ``<sim>/{twitter,reddit}/actions.jsonl``.
+
+    Cursor contract: every agent action gets a 1-based sequence number in
+    *arrival order*. Each ``refresh()`` reads only the complete lines appended
+    since the previous refresh (per-file byte offsets), merges that batch by
+    ``(timestamp, platform order twitter<reddit, line order)`` and appends it
+    to the sequence. Numbers already handed out never move, so
+    ``after=<cursor>`` paging is gap- and duplicate-free while logs grow.
+    Only ``(platform, byte offset)`` pairs are kept in memory; pages are
+    re-read from disk. If a log file shrinks, disappears, or is replaced the
+    index is rebuilt and ``epoch`` changes, telling clients to restart at 0.
+    """
+
+    def __init__(self, sim_dir: str):
+        self.sim_dir = sim_dir
+        self.lock = threading.Lock()
+        self._reset()
+
+    def _reset(self) -> None:
+        self.epoch = uuid.uuid4().hex[:12]
+        self.platform_codes = array('b')
+        self.offsets = array('q')
+        self.positions = {platform: 0 for platform in _ACTION_LOG_PLATFORMS}
+        self.file_ids: Dict[str, Optional[tuple[int, int]]] = {
+            platform: None for platform in _ACTION_LOG_PLATFORMS
+        }
+
+    def _path(self, platform: str) -> str:
+        return os.path.join(self.sim_dir, platform, "actions.jsonl")
+
+    def _needs_rebuild(self) -> bool:
+        for platform in _ACTION_LOG_PLATFORMS:
+            if self.file_ids[platform] is None:
+                continue
+            try:
+                stat = os.stat(self._path(platform))
+            except FileNotFoundError:
+                return True
+            if (
+                (stat.st_dev, stat.st_ino) != self.file_ids[platform]
+                or stat.st_size < self.positions[platform]
+            ):
+                return True
+        return False
+
+    def refresh(self) -> None:
+        """Index newly appended complete lines. Caller holds ``self.lock``."""
+        if self._needs_rebuild():
+            self._reset()
+        batch = []
+        for code, platform in enumerate(_ACTION_LOG_PLATFORMS):
+            path = self._path(platform)
+            try:
+                handle = open(path, 'rb')
+            except FileNotFoundError:
+                continue
+            with handle:
+                stat = os.fstat(handle.fileno())
+                self.file_ids[platform] = (stat.st_dev, stat.st_ino)
+                offset = self.positions[platform]
+                handle.seek(offset)
+                line_no = 0
+                for raw in handle:
+                    if not raw.endswith(b"\n"):
+                        break  # writer is mid-line; pick it up next time
+                    line_offset = offset
+                    offset += len(raw)
+                    line_no += 1
+                    try:
+                        data = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if (
+                        not isinstance(data, dict)
+                        or "event_type" in data
+                        or "agent_id" not in data
+                    ):
+                        continue
+                    batch.append(
+                        (str(data.get("timestamp") or ""), code, line_no, line_offset)
+                    )
+                self.positions[platform] = offset
+        batch.sort()
+        for _timestamp, code, _line_no, line_offset in batch:
+            self.platform_codes.append(code)
+            self.offsets.append(line_offset)
+
+    def page(
+        self, after: int, limit: int, platform: Optional[str] = None
+    ) -> Dict[str, Any]:
+        with self.lock:
+            self.refresh()
+            total = len(self.offsets)
+            if after > total:
+                return {
+                    "actions": [],
+                    "next_cursor": total,
+                    "total": total,
+                    "epoch": self.epoch,
+                    "cursor_reset": True,
+                }
+            wanted = (
+                None if platform is None else _ACTION_LOG_PLATFORMS.index(platform)
+            )
+            selected = []
+            next_cursor = total
+            for index in range(after, total):
+                code = self.platform_codes[index]
+                if wanted is not None and code != wanted:
+                    continue
+                selected.append((index + 1, code, self.offsets[index]))
+                if len(selected) >= limit:
+                    next_cursor = index + 1
+                    break
+            actions = self._read_selected(selected)
+            return {
+                "actions": actions,
+                "next_cursor": next_cursor,
+                "total": total,
+                "epoch": self.epoch,
+                "cursor_reset": False,
+            }
+
+    def _read_selected(
+        self, selected: List[tuple[int, int, int]]
+    ) -> List[Dict[str, Any]]:
+        by_code: Dict[int, List[tuple[int, int, int]]] = {}
+        for item in selected:
+            by_code.setdefault(item[1], []).append(item)
+        loaded: Dict[int, Dict[str, Any]] = {}
+        for code, items in by_code.items():
+            platform = _ACTION_LOG_PLATFORMS[code]
+            with open(self._path(platform), 'rb') as handle:
+                for cursor, _code, line_offset in items:
+                    handle.seek(line_offset)
+                    data = json.loads(handle.readline())
+                    action = AgentAction(
+                        round_num=data.get("round", 0),
+                        timestamp=data.get("timestamp", ""),
+                        platform=data.get("platform") or platform,
+                        agent_id=data.get("agent_id", 0),
+                        agent_name=data.get("agent_name", ""),
+                        action_type=data.get("action_type", ""),
+                        action_args=data.get("action_args", {}),
+                        result=data.get("result"),
+                        success=data.get("success", True),
+                    ).to_dict()
+                    action["cursor"] = cursor
+                    loaded[cursor] = action
+        return [loaded[item[0]] for item in selected]
+
+
+class _FinalizationLock:
+    """Per-simulation lock handle that survives registry eviction.
+
+    After acquiring, it checks that the registry still maps the simulation to
+    the same lock; if eviction swapped it out in between, it retries with the
+    current one. Eviction only removes locks it can acquire non-blocking, so a
+    held lock is never orphaned.
+    """
+
+    def __init__(self, simulation_id: str):
+        self._simulation_id = simulation_id
+        self._held: Optional[threading.Lock] = None
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        while True:
+            lock = SimulationRunner._finalization_lock_entry(self._simulation_id)
+            if not lock.acquire(blocking, timeout):
+                return False
+            with SimulationRunner._finalization_locks_guard:
+                current = SimulationRunner._finalization_locks.get(
+                    self._simulation_id
+                )
+            if current is lock:
+                self._held = lock
+                return True
+            lock.release()
+
+    def release(self) -> None:
+        lock, self._held = self._held, None
+        if lock is None:
+            raise RuntimeError("release of an unacquired finalization lock")
+        lock.release()
+
+    def __enter__(self) -> "_FinalizationLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.release()
+
+
 class SimulationRunner:
     """
     模拟运行器
@@ -238,12 +446,97 @@ class SimulationRunner:
     _finalization_locks_guard = threading.Lock()
     _manual_stop_requests: set[str] = set()
 
+    # Terminal run states (and their finalization locks / cursor indexes) are
+    # evicted from memory this long after they became terminal; they reload
+    # from run_state.json on demand. ``_clock`` is injectable for tests.
+    RUN_STATE_TTL_SECONDS: float = float(
+        os.environ.get("RUN_STATE_TTL_SECONDS", "600")
+    )
+    _clock = staticmethod(time.monotonic)
+    _terminal_since: Dict[str, float] = {}
+    _TERMINAL_STATUSES = frozenset({
+        RunnerStatus.IDLE,
+        RunnerStatus.STOPPED,
+        RunnerStatus.COMPLETED,
+        RunnerStatus.FAILED,
+    })
+    _action_indexes: Dict[str, _ActionLogIndex] = {}
+
     @classmethod
-    def _finalization_lock(cls, simulation_id: str) -> threading.Lock:
+    def _finalization_lock_entry(cls, simulation_id: str) -> threading.Lock:
         with cls._finalization_locks_guard:
             return cls._finalization_locks.setdefault(
                 simulation_id, threading.Lock()
             )
+
+    @classmethod
+    def _finalization_lock(cls, simulation_id: str) -> _FinalizationLock:
+        return _FinalizationLock(simulation_id)
+
+    @classmethod
+    def _track_terminal(cls, state: SimulationRunState) -> None:
+        with cls._finalization_locks_guard:
+            if state.runner_status in cls._TERMINAL_STATUSES:
+                cls._terminal_since.setdefault(state.simulation_id, cls._clock())
+            else:
+                cls._terminal_since.pop(state.simulation_id, None)
+
+    @classmethod
+    def evict_expired_run_states(cls) -> List[str]:
+        """Drop in-memory resources of runs terminal for >= the TTL.
+
+        A run is kept while it still owns a process, monitor thread, manual
+        stop request, or Zep updater, or while its finalization lock is held.
+        """
+        now = cls._clock()
+        evicted = []
+        with cls._finalization_locks_guard:
+            for simulation_id, since in list(cls._terminal_since.items()):
+                if now - since < cls.RUN_STATE_TTL_SECONDS:
+                    continue
+                state = cls._run_states.get(simulation_id)
+                if state is not None and state.runner_status not in cls._TERMINAL_STATUSES:
+                    cls._terminal_since.pop(simulation_id, None)
+                    continue
+                if (
+                    simulation_id in cls._processes
+                    or simulation_id in cls._monitor_threads
+                    or simulation_id in cls._manual_stop_requests
+                    or cls._graph_memory_enabled.get(simulation_id)
+                    or ZepGraphMemoryManager.get_updater(simulation_id) is not None
+                ):
+                    continue
+                lock = cls._finalization_locks.get(simulation_id)
+                if lock is not None:
+                    if not lock.acquire(blocking=False):
+                        continue
+                    cls._finalization_locks.pop(simulation_id, None)
+                    lock.release()
+                cls._run_states.pop(simulation_id, None)
+                cls._graph_memory_enabled.pop(simulation_id, None)
+                cls._action_queues.pop(simulation_id, None)
+                cls._action_indexes.pop(simulation_id, None)
+                cls._terminal_since.pop(simulation_id, None)
+                evicted.append(simulation_id)
+        if evicted:
+            logger.debug("已回收终态模拟的内存状态: %s", evicted)
+        return evicted
+
+    @classmethod
+    def get_actions_page(
+        cls,
+        simulation_id: str,
+        after: int,
+        limit: int,
+        platform: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return agent actions with cursor > ``after`` (see _ActionLogIndex)."""
+        with cls._finalization_locks_guard:
+            index = cls._action_indexes.get(simulation_id)
+            if index is None:
+                index = _ActionLogIndex(os.path.join(cls.RUN_STATE_DIR, simulation_id))
+                cls._action_indexes[simulation_id] = index
+        return index.page(after, limit, platform)
 
     @classmethod
     def _sync_simulation_status(
@@ -288,6 +581,7 @@ class SimulationRunner:
     @classmethod
     def get_run_state(cls, simulation_id: str) -> Optional[SimulationRunState]:
         """获取运行状态"""
+        cls.evict_expired_run_states()
         if simulation_id in cls._run_states:
             return cls._run_states[simulation_id]
         
@@ -295,6 +589,7 @@ class SimulationRunner:
         state = cls._load_run_state(simulation_id)
         if state:
             cls._run_states[simulation_id] = state
+            cls._track_terminal(state)
         return state
     
     @classmethod
@@ -366,6 +661,7 @@ class SimulationRunner:
             json.dump(data, f, ensure_ascii=False, indent=2)
         
         cls._run_states[state.simulation_id] = state
+        cls._track_terminal(state)
     
     @classmethod
     def start_simulation(
@@ -394,7 +690,7 @@ class SimulationRunner:
         config_path = os.path.join(sim_dir, "simulation_config.json")
         
         if not os.path.exists(config_path):
-            raise ValueError(f"模拟配置不存在，请先调用 /prepare 接口")
+            raise ValueError(t('api.configNotFound'))
         
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
@@ -434,13 +730,13 @@ class SimulationRunner:
             if (
                 existing and existing.runner_status in active_statuses
             ) or ZepGraphMemoryManager.get_updater(simulation_id) is not None:
-                raise ValueError(f"模拟已在运行或结束处理中: {simulation_id}")
+                raise ValueError(t_detail('api.simAlreadyRunning', id=simulation_id))
             cls._save_run_state(state)
         
         # 如果启用图谱记忆更新，创建更新器
         if enable_graph_memory_update:
             if not graph_id:
-                raise ValueError("启用图谱记忆更新时必须提供 graph_id")
+                raise ValueError(t('api.graphIdRequiredForMemory'))
             
             try:
                 ZepGraphMemoryManager.create_updater(simulation_id, graph_id)
@@ -450,7 +746,7 @@ class SimulationRunner:
                 logger.error(f"创建图谱记忆更新器失败: {e}")
                 cls._graph_memory_enabled[simulation_id] = False
                 state.runner_status = RunnerStatus.FAILED
-                state.error = f"Zep图谱更新器初始化失败: {e}"
+                state.error = t_detail('api.graphUpdaterInitFailed', error=e)
                 with cls._finalization_lock(simulation_id):
                     cls._save_run_state(state)
                     cls._sync_simulation_status(
@@ -487,9 +783,9 @@ class SimulationRunner:
             state.runner_status = RunnerStatus.FAILED
             state.twitter_running = False
             state.reddit_running = False
-            state.error = f"脚本不存在: {script_path}"
+            state.error = t_detail('api.scriptFileNotFound', name=script_path)
             if cleanup_error is not None:
-                state.error += f"; Zep图谱写入清理失败: {cleanup_error}"
+                state.error += "; " + t_detail('api.graphCleanupFailed', error=cleanup_error)
             with cls._finalization_lock(simulation_id):
                 cls._save_run_state(state)
                 cls._sync_simulation_status(
@@ -582,7 +878,7 @@ class SimulationRunner:
                 try:
                     cls._terminate_process(process, simulation_id)
                 except Exception as error:
-                    cleanup_errors.append(f"子进程终止失败: {error}")
+                    cleanup_errors.append(t_detail('api.processTerminateFailed', error=error))
             cls._processes.pop(simulation_id, None)
             cls._monitor_threads.pop(simulation_id, None)
             cls._action_queues.pop(simulation_id, None)
@@ -592,13 +888,13 @@ class SimulationRunner:
                 try:
                     main_log_file.close()
                 except Exception as error:
-                    cleanup_errors.append(f"日志关闭失败: {error}")
+                    cleanup_errors.append(t_detail('api.logCloseFailed', error=error))
             if cls._graph_memory_enabled.get(simulation_id, False):
                 try:
                     ZepGraphMemoryManager.stop_updater(simulation_id)
                     cls._graph_memory_enabled.pop(simulation_id, None)
                 except Exception as error:
-                    cleanup_errors.append(f"Zep图谱写入清理失败: {error}")
+                    cleanup_errors.append(t_detail('api.graphCleanupFailed', error=error))
             state.runner_status = RunnerStatus.FAILED
             state.twitter_running = False
             state.reddit_running = False
@@ -700,8 +996,10 @@ class SimulationRunner:
                                     error_info = f.read()[-2000:]
                         except Exception:
                             pass
-                        error_message = (
-                            f"进程退出码: {exit_code}, 错误: {error_info}"
+                        error_message = t_detail(
+                            'api.processExitError',
+                            code=exit_code,
+                            error=error_info,
                         )
 
                     state.twitter_running = False
@@ -727,7 +1025,7 @@ class SimulationRunner:
                         except Exception as error:
                             logger.error(f"停止图谱记忆更新器失败: {error}")
                             desired_status = RunnerStatus.FAILED
-                            error_message = f"Zep图谱写入未完整完成: {error}"
+                            error_message = t_detail('api.graphIngestionIncomplete', error=error)
 
                     state.runner_status = desired_status
                     state.error = error_message
@@ -967,7 +1265,7 @@ class SimulationRunner:
         with cls._finalization_lock(simulation_id):
             state = cls.get_run_state(simulation_id)
             if not state:
-                raise ValueError(f"模拟不存在: {simulation_id}")
+                raise ValueError(t_detail('api.simulationNotFound', id=simulation_id))
             if state.runner_status == RunnerStatus.STOPPED:
                 return state
 
@@ -989,7 +1287,11 @@ class SimulationRunner:
                 and not retrying_finalization
             ):
                 raise ValueError(
-                    f"模拟未在运行: {simulation_id}, status={state.runner_status}"
+                    t_detail(
+                        'api.simNotRunning',
+                        id=simulation_id,
+                        status=state.runner_status.value,
+                    )
                 )
 
             state.runner_status = RunnerStatus.STOPPING
@@ -1052,7 +1354,7 @@ class SimulationRunner:
                         state.twitter_running = False
                         state.reddit_running = False
                         state.completed_at = datetime.now().isoformat()
-                        state.error = f"Zep图谱写入未完整完成: {error}"
+                        state.error = t_detail('api.graphIngestionIncomplete', error=error)
                         cls._save_run_state(state)
                         cls._sync_simulation_status(
                             simulation_id,
@@ -1074,10 +1376,14 @@ class SimulationRunner:
 
         state = cls.get_run_state(simulation_id) or state
         if state.runner_status == RunnerStatus.FAILED:
-            raise RuntimeError(state.error or "模拟停止失败")
+            raise RuntimeError(state.error or t('api.simStopFailed'))
         if state.runner_status != RunnerStatus.STOPPED:
             raise RuntimeError(
-                f"模拟停止未达到终态: {simulation_id}, status={state.runner_status}"
+                t_detail(
+                    'api.simStopNotTerminal',
+                    id=simulation_id,
+                    status=state.runner_status.value,
+                )
             )
 
         logger.info(f"模拟已停止: {simulation_id}")
@@ -1389,7 +1695,7 @@ class SimulationRunner:
         sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
         
         if not os.path.exists(sim_dir):
-            return {"success": True, "message": "模拟目录不存在，无需清理"}
+            return {"success": True, "message": t('api.simDirMissingNoCleanup')}
         
         cleaned_files = []
         errors = []
@@ -1416,7 +1722,7 @@ class SimulationRunner:
                     os.remove(file_path)
                     cleaned_files.append(filename)
                 except Exception as e:
-                    errors.append(f"删除 {filename} 失败: {str(e)}")
+                    errors.append(t_detail('api.deleteFileFailed', name=filename, error=e))
         
         # 清理平台目录中的动作日志
         for dir_name in dirs_to_clean:
@@ -1428,11 +1734,14 @@ class SimulationRunner:
                         os.remove(actions_file)
                         cleaned_files.append(f"{dir_name}/actions.jsonl")
                     except Exception as e:
-                        errors.append(f"删除 {dir_name}/actions.jsonl 失败: {str(e)}")
+                        errors.append(t_detail('api.deleteFileFailed', name=f"{dir_name}/actions.jsonl", error=e))
         
         # 清理内存中的运行状态
         if simulation_id in cls._run_states:
             del cls._run_states[simulation_id]
+        with cls._finalization_locks_guard:
+            cls._action_indexes.pop(simulation_id, None)
+            cls._terminal_since.pop(simulation_id, None)
         
         logger.info(f"清理模拟日志完成: {simulation_id}, 删除文件: {cleaned_files}")
         
@@ -1721,12 +2030,12 @@ class SimulationRunner:
         """
         sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
         if not os.path.exists(sim_dir):
-            raise ValueError(f"模拟不存在: {simulation_id}")
+            raise ValueError(t_detail('api.simulationNotFound', id=simulation_id))
 
         ipc_client = SimulationIPCClient(sim_dir)
 
         if not ipc_client.check_env_alive():
-            raise ValueError(f"模拟环境未运行或已关闭，无法执行Interview: {simulation_id}")
+            raise ValueError(t('api.envNotRunning'))
 
         logger.info(f"发送Interview命令: simulation_id={simulation_id}, agent_id={agent_id}, platform={platform}")
 
@@ -1783,12 +2092,12 @@ class SimulationRunner:
         """
         sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
         if not os.path.exists(sim_dir):
-            raise ValueError(f"模拟不存在: {simulation_id}")
+            raise ValueError(t_detail('api.simulationNotFound', id=simulation_id))
 
         ipc_client = SimulationIPCClient(sim_dir)
 
         if not ipc_client.check_env_alive():
-            raise ValueError(f"模拟环境未运行或已关闭，无法执行Interview: {simulation_id}")
+            raise ValueError(t('api.envNotRunning'))
 
         logger.info(f"发送批量Interview命令: simulation_id={simulation_id}, count={len(interviews)}, platform={platform}")
 
@@ -1840,19 +2149,19 @@ class SimulationRunner:
         """
         sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
         if not os.path.exists(sim_dir):
-            raise ValueError(f"模拟不存在: {simulation_id}")
+            raise ValueError(t_detail('api.simulationNotFound', id=simulation_id))
 
         # 从配置文件获取所有Agent信息
         config_path = os.path.join(sim_dir, "simulation_config.json")
         if not os.path.exists(config_path):
-            raise ValueError(f"模拟配置不存在: {simulation_id}")
+            raise ValueError(t('api.configNotFound'))
 
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
 
         agent_configs = config.get("agent_configs", [])
         if not agent_configs:
-            raise ValueError(f"模拟配置中没有Agent: {simulation_id}")
+            raise ValueError(t_detail('api.noAgentsInConfig', id=simulation_id))
 
         # 构建批量采访列表
         interviews = []
@@ -1893,14 +2202,14 @@ class SimulationRunner:
         """
         sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
         if not os.path.exists(sim_dir):
-            raise ValueError(f"模拟不存在: {simulation_id}")
+            raise ValueError(t_detail('api.simulationNotFound', id=simulation_id))
         
         ipc_client = SimulationIPCClient(sim_dir)
         
         if not ipc_client.check_env_alive():
             return {
                 "success": True,
-                "message": "环境已经关闭"
+                "message": t('api.envAlreadyClosed')
             }
         
         logger.info(f"发送关闭环境命令: simulation_id={simulation_id}")
@@ -1910,7 +2219,7 @@ class SimulationRunner:
             
             return {
                 "success": response.status.value == "completed",
-                "message": "环境关闭命令已发送",
+                "message": t('api.envCloseSent'),
                 "result": response.result,
                 "timestamp": response.timestamp
             }
@@ -1918,7 +2227,7 @@ class SimulationRunner:
             # 超时可能是因为环境正在关闭
             return {
                 "success": True,
-                "message": "环境关闭命令已发送（等待响应超时，环境可能正在关闭）"
+                "message": t('api.envCloseSentTimeout')
             }
     
     @classmethod

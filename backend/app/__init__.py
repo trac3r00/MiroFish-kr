@@ -13,7 +13,7 @@ from flask import Flask, request
 from flask_cors import CORS
 
 from .config import Config
-from .utils.logger import setup_logger, get_logger
+from .utils.logger import setup_logger, get_logger, format_request_body
 
 
 def create_app(config_class=Config):
@@ -53,8 +53,19 @@ def create_app(config_class=Config):
     def log_request():
         logger = get_logger('mirofish.request')
         logger.debug(f"请求: {request.method} {request.path}")
-        if request.content_type and 'json' in request.content_type:
-            logger.debug(f"请求体: {request.get_json(silent=True)}")
+        if (
+            os.environ.get("LOG_REQUEST_BODIES") == "1"
+            and request.content_type
+            and 'json' in request.content_type
+            and logger.isEnabledFor(10)
+        ):
+            try:
+                body = request.get_json(silent=True)
+                if body is not None:
+                    max_chars = int(os.environ.get("LOG_BODY_MAX_CHARS", "2000"))
+                    logger.debug("请求体: %s", format_request_body(body, max_chars))
+            except (TypeError, ValueError):
+                logger.debug("请求体: [unavailable]")
     
     @app.after_request
     def log_response(response):
@@ -63,10 +74,11 @@ def create_app(config_class=Config):
         return response
     
     # 注册蓝图
-    from .api import graph_bp, simulation_bp, report_bp
+    from .api import graph_bp, simulation_bp, report_bp, llm_bp
     app.register_blueprint(graph_bp, url_prefix='/api/graph')
     app.register_blueprint(simulation_bp, url_prefix='/api/simulation')
     app.register_blueprint(report_bp, url_prefix='/api/report')
+    app.register_blueprint(llm_bp)
     
     # 健康检查
     @app.route('/health')

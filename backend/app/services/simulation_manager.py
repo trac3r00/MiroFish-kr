@@ -16,7 +16,8 @@ from ..config import Config
 from ..utils.logger import get_logger
 from .zep_entity_reader import ZepEntityReader, FilteredEntities
 from .oasis_profile_generator import OasisProfileGenerator, OasisAgentProfile
-from .simulation_config_generator import SimulationConfigGenerator, SimulationParameters
+from .simulation_config_generator import SimulationConfigGenerator, SimulationParameters, normalize_persona_mix
+from .persona_archetypes import assign_archetypes
 from ..utils.locale import t
 
 logger = get_logger('mirofish.simulation')
@@ -249,7 +250,8 @@ class SimulationManager:
         defined_entity_types: Optional[List[str]] = None,
         use_llm_for_profiles: bool = True,
         progress_callback: Optional[callable] = None,
-        parallel_profile_count: int = 3
+        parallel_profile_count: int = 3,
+        persona_mix: Optional[Dict[str, Any]] = None,
     ) -> SimulationState:
         """
         准备模拟环境（全程自动化）
@@ -330,6 +332,19 @@ class SimulationManager:
                     total=total_entities
                 )
             
+            # 人设原型：与 config 生成器相同的 (preset, seed, agent index) 分配，保证 profile 与 config 一致
+            archetype_by_entity = None
+            if persona_mix is not None:
+                persona_mix = normalize_persona_mix(persona_mix, simulation_id)
+                by_agent = assign_archetypes(
+                    list(range(total_entities)), persona_mix["preset"], persona_mix["seed"]
+                )
+                archetype_by_entity = {}
+                for idx, entity in enumerate(filtered.entities):
+                    archetype_id = by_agent.get(idx)
+                    if archetype_id:
+                        archetype_by_entity[entity.uuid] = archetype_id
+            
             # 传入graph_id以启用Zep检索功能，获取更丰富的上下文
             generator = OasisProfileGenerator(graph_id=state.graph_id)
             
@@ -361,7 +376,8 @@ class SimulationManager:
                 graph_id=state.graph_id,  # 传入graph_id用于Zep检索
                 parallel_count=parallel_profile_count,  # 并行生成数量
                 realtime_output_path=realtime_output_path,  # 实时保存路径
-                output_platform=realtime_platform  # 输出格式
+                output_platform=realtime_platform,  # 输出格式
+                archetype_by_entity=archetype_by_entity
             )
             
             state.profiles_count = len(profiles)
@@ -428,7 +444,8 @@ class SimulationManager:
                 document_text=document_text,
                 entities=filtered.entities,
                 enable_twitter=state.enable_twitter,
-                enable_reddit=state.enable_reddit
+                enable_reddit=state.enable_reddit,
+                persona_mix=persona_mix
             )
             
             if progress_callback:

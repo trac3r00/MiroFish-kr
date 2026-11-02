@@ -130,6 +130,13 @@ except ImportError as e:
     print("请先安装: pip install oasis-ai camel-ai")
     sys.exit(1)
 
+# 共享：按 llm_profile 为每个 Agent 创建模型、IPC 空闲退避循环
+from run_parallel_simulation import (
+    build_platform_agent_graph,
+    run_command_loop,
+    wait_for_shutdown,
+)
+
 
 # IPC相关常量
 IPC_COMMANDS_DIR = "ipc_commands"
@@ -350,7 +357,10 @@ class IPCHandler:
         command = self.poll_command()
         if not command:
             return True
-        
+        return await self.handle_command(command)
+
+    async def handle_command(self, command: Dict[str, Any]) -> bool:
+        """处理单个命令；返回 False 表示应该退出"""
         command_id = command.get("command_id")
         command_type = command.get("command_type")
         args = command.get("args", {})
@@ -566,7 +576,6 @@ class TwitterSimulationRunner:
         
         # 创建模型
         print("\n初始化LLM模型...")
-        model = self._create_model()
         
         # 加载Agent图
         print("加载Agent Profile...")
@@ -575,10 +584,13 @@ class TwitterSimulationRunner:
             print(f"错误: Profile文件不存在: {profile_path}")
             return
         
-        self.agent_graph = await generate_twitter_agent_graph(
-            profile_path=profile_path,
-            model=model,
-            available_actions=self.AVAILABLE_ACTIONS,
+        # 每个 Agent 按 llm_profile 使用自己的模型；无 llm_profile 时使用 .env 中的单一模型
+        self.agent_graph = await build_platform_agent_graph(
+            "twitter",
+            profile_path,
+            self.config,
+            self.AVAILABLE_ACTIONS,
+            legacy_model_factory=self._create_model,
         )
         
         # 数据库路径
@@ -676,17 +688,13 @@ class TwitterSimulationRunner:
             
             self.ipc_handler.update_status("alive")
             
-            # 等待命令循环（使用全局 _shutdown_event）
+            # 等待命令循环（使用全局 _shutdown_event）；空闲时轮询间隔 0.5s -> 2s 递增，收到命令后重置
             try:
-                while not _shutdown_event.is_set():
-                    should_continue = await self.ipc_handler.process_commands()
-                    if not should_continue:
-                        break
-                    try:
-                        await asyncio.wait_for(_shutdown_event.wait(), timeout=0.5)
-                        break  # 收到退出信号
-                    except asyncio.TimeoutError:
-                        pass
+                await run_command_loop(
+                    self.ipc_handler.poll_command,
+                    self.ipc_handler.handle_command,
+                    lambda delay: wait_for_shutdown(_shutdown_event, delay),
+                )
             except KeyboardInterrupt:
                 print("\n收到中断信号")
             except asyncio.CancelledError:

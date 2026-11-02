@@ -73,8 +73,10 @@ import random
 import signal
 import sqlite3
 import warnings
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 
 # 全局变量：用于信号处理
@@ -165,6 +167,9 @@ try:
         ActionType,
         LLMAction,
         ManualAction,
+        AgentGraph,
+        SocialAgent,
+        UserInfo,
         generate_twitter_agent_graph,
         generate_reddit_agent_graph
     )
@@ -567,7 +572,10 @@ class ParallelIPCHandler:
         command = self.poll_command()
         if not command:
             return True
-        
+        return await self.handle_command(command)
+
+    async def handle_command(self, command: Dict[str, Any]) -> bool:
+        """处理单个命令；返回 False 表示应该退出"""
         command_id = command.get("command_id")
         command_type = command.get("command_type")
         args = command.get("args", {})
@@ -1037,6 +1045,322 @@ def create_model(config: Dict[str, Any], use_boost: bool = False):
     )
 
 
+# ============================================================
+# Per-agent models (agent_configs[].llm_profile)
+# ============================================================
+
+GATEWAY_PATH = "/api/llm/gateway/v1"
+GATEWAY_TOKEN_ENV = "MIROFISH_GATEWAY_TOKEN"
+GATEWAY_TOKEN_HEADER = "X-MiroFish-Gateway-Token"
+GATEWAY_PROFILE_HEADER = "X-MiroFish-Profile"
+# The gateway authenticates with GATEWAY_TOKEN_HEADER; the OpenAI SDK still needs a non-empty key.
+GATEWAY_PLACEHOLDER_API_KEY = "mirofish-gateway"
+OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+# Profiles without an OpenAI-compatible HTTP endpoint of their own; agents reach them via the gateway.
+GATEWAY_PROFILE_KINDS = ("chatgpt_oauth", "claude_code_cli", "cursor_agent_cli")
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    """Arguments for one ModelFactory.create call (one per distinct profile)."""
+    profile_id: str
+    model_platform: Any  # ModelPlatformType
+    model_type: str
+    url: str
+    api_key: Optional[str] = field(default=None, repr=False)
+    headers: Tuple[Tuple[str, str], ...] = field(default=(), repr=False)
+    via_gateway: bool = False
+    label_model: str = ""
+
+
+@dataclass
+class AgentModelPlan:
+    """agent_id -> profile id (None = legacy single model) plus one spec per used profile."""
+    agent_profiles: Dict[int, Optional[str]]
+    specs: Dict[str, ModelSpec]
+    unknown_profiles: Dict[str, List[int]] = field(default_factory=dict)
+
+
+def _gateway_base_url(env) -> str:
+    port = str(env.get("FLASK_PORT") or "5001").strip()
+    return f"http://127.0.0.1:{port}{GATEWAY_PATH}"
+
+
+def _spec_for_profile(profile, env) -> ModelSpec:
+    if profile.kind in GATEWAY_PROFILE_KINDS:
+        token = env.get(GATEWAY_TOKEN_ENV)
+        if not token:
+            raise ValueError(
+                f"LLM profile {profile.id!r} uses {profile.kind} but {GATEWAY_TOKEN_ENV} is not set; "
+                "start the simulation from the MiroFish backend"
+            )
+        return ModelSpec(
+            profile_id=profile.id,
+            model_platform=ModelPlatformType.OPENAI_COMPATIBLE_MODEL,
+            model_type=profile.id,  # the gateway resolves a body model equal to a profile id
+            url=_gateway_base_url(env),
+            api_key=GATEWAY_PLACEHOLDER_API_KEY,
+            headers=((GATEWAY_TOKEN_HEADER, token), (GATEWAY_PROFILE_HEADER, profile.id)),
+            via_gateway=True,
+            label_model=profile.model,
+        )
+    base_url = profile.base_url or OPENAI_DEFAULT_BASE_URL
+    is_openai = (urlsplit(base_url).hostname or "").lower() == "api.openai.com"
+    return ModelSpec(
+        profile_id=profile.id,
+        model_platform=ModelPlatformType.OPENAI if is_openai else ModelPlatformType.OPENAI_COMPATIBLE_MODEL,
+        model_type=profile.model,
+        url=base_url,
+        api_key=profile.api_key,
+        headers=tuple(sorted((profile.extra_headers or {}).items())),
+        label_model=profile.model,
+    )
+
+
+def build_agent_model_specs(
+    config: Dict[str, Any],
+    profiles: Iterable[Any],
+    *,
+    fallback_profile_id: Optional[str] = None,
+    env=None,
+) -> Optional[AgentModelPlan]:
+    """Map every agent in config['agent_configs'] to a model spec.
+
+    Returns None when no agent carries an llm_profile: the caller keeps the old single model.
+    Agents without (or with an unknown) llm_profile use fallback_profile_id, or the legacy
+    single model (None) when no fallback is given. Specs are built once per distinct profile.
+    """
+    env = os.environ if env is None else env
+    agent_configs = config.get("agent_configs") or []
+    if not any(cfg.get("llm_profile") for cfg in agent_configs):
+        return None
+
+    by_id = {profile.id: profile for profile in profiles}
+    if fallback_profile_id is not None and fallback_profile_id not in by_id:
+        fallback_profile_id = None
+
+    plan = AgentModelPlan(agent_profiles={}, specs={})
+    for cfg in agent_configs:
+        agent_id = int(cfg.get("agent_id", 0))
+        profile_id = cfg.get("llm_profile") or None
+        if profile_id is not None and profile_id not in by_id:
+            plan.unknown_profiles.setdefault(profile_id, []).append(agent_id)
+            profile_id = None
+        if profile_id is None:
+            profile_id = fallback_profile_id
+        plan.agent_profiles[agent_id] = profile_id
+        if profile_id is not None and profile_id not in plan.specs:
+            plan.specs[profile_id] = _spec_for_profile(by_id[profile_id], env)
+    return plan
+
+
+def create_model_backends(plan: AgentModelPlan, factory=None) -> Dict[str, Any]:
+    """Create exactly one model backend per distinct profile in the plan."""
+    create = factory or ModelFactory.create
+    backends: Dict[str, Any] = {}
+    for profile_id, spec in plan.specs.items():
+        kwargs: Dict[str, Any] = {}
+        if spec.headers:
+            kwargs["default_headers"] = dict(spec.headers)
+        backends[profile_id] = create(
+            model_platform=spec.model_platform,
+            model_type=spec.model_type,
+            api_key=spec.api_key,
+            url=spec.url,
+            **kwargs,
+        )
+    return backends
+
+
+def plan_agent_models(config: Dict[str, Any]) -> Optional[AgentModelPlan]:
+    """Load LLM profiles from env (LLM_PROFILES etc.) only when the config assigns them."""
+    if not any(cfg.get("llm_profile") for cfg in config.get("agent_configs") or []):
+        return None
+    from app.llm.profiles import load_settings
+
+    settings = load_settings()
+    return build_agent_model_specs(
+        config,
+        settings.profiles,
+        fallback_profile_id=settings.routes.get("simulation_agent") or settings.default_profile_id,
+    )
+
+
+def describe_agent_model_plan(plan: AgentModelPlan) -> List[str]:
+    """Human-readable lines (no secrets) describing which model serves how many agents."""
+    counts: Dict[Optional[str], int] = {}
+    for profile_id in plan.agent_profiles.values():
+        counts[profile_id] = counts.get(profile_id, 0) + 1
+    lines = []
+    for profile_id, count in counts.items():
+        if profile_id is None:
+            lines.append(f"legacy single model: {count} agents")
+            continue
+        spec = plan.specs[profile_id]
+        route = "gateway" if spec.via_gateway else "direct"
+        lines.append(f"profile={profile_id} model={spec.label_model} ({route}): {count} agents")
+    for profile_id, agent_ids in plan.unknown_profiles.items():
+        lines.append(f"unknown profile {profile_id!r} for agents {agent_ids[:10]}; using fallback")
+    return lines
+
+
+def build_agent_graph(
+    platform: str,
+    profile_path: str,
+    model_for_agent: Callable[[int], Any],
+    available_actions,
+):
+    """Same graph as oasis generate_{twitter,reddit}_agent_graph (0.2.5), but one model per agent."""
+    agent_graph = AgentGraph()
+    if platform == "twitter":
+        import pandas as pd
+
+        agent_info = pd.read_csv(profile_path)
+        rows = [
+            (agent_info["username"][i], agent_info["description"][i],
+             {"user_profile": agent_info["user_char"][i]})
+            for i in range(len(agent_info))
+        ]
+    elif platform == "reddit":
+        with open(profile_path, "r", encoding="utf-8") as f:
+            agent_info = json.load(f)
+        rows = [
+            (info["username"], info["bio"], {
+                "user_profile": info["persona"],
+                "mbti": info["mbti"],
+                "gender": info["gender"],
+                "age": info["age"],
+                "country": info["country"],
+            })
+            for info in agent_info
+        ]
+    else:
+        raise ValueError(f"unknown platform: {platform}")
+
+    for agent_id, (name, description, other_info) in enumerate(rows):
+        user_info = UserInfo(
+            name=name,
+            description=description,
+            profile={"nodes": [], "edges": [], "other_info": other_info},
+            recsys_type=platform,
+        )
+        agent_graph.add_agent(SocialAgent(
+            agent_id=agent_id,
+            user_info=user_info,
+            agent_graph=agent_graph,
+            model=model_for_agent(agent_id),
+            available_actions=available_actions,
+        ))
+    return agent_graph
+
+
+async def build_platform_agent_graph(
+    platform: str,
+    profile_path: str,
+    config: Dict[str, Any],
+    available_actions,
+    legacy_model_factory: Callable[[], Any],
+    log: Callable[[str], None] = print,
+):
+    """Agent graph with per-agent models when the config assigns llm_profile, else the old path."""
+    plan = plan_agent_models(config)
+    if plan is None:
+        generator = generate_twitter_agent_graph if platform == "twitter" else generate_reddit_agent_graph
+        return await generator(
+            profile_path=profile_path,
+            model=legacy_model_factory(),
+            available_actions=available_actions,
+        )
+
+    for line in describe_agent_model_plan(plan):
+        log(f"[LLM] {line}")
+    backends = create_model_backends(plan)
+    legacy_model = None
+
+    def model_for_agent(agent_id: int):
+        nonlocal legacy_model
+        profile_id = plan.agent_profiles.get(agent_id)
+        if profile_id is not None:
+            return backends[profile_id]
+        if legacy_model is None:
+            legacy_model = legacy_model_factory()
+        return legacy_model
+
+    return build_agent_graph(platform, profile_path, model_for_agent, available_actions)
+
+
+# ============================================================
+# IPC idle loop
+# ============================================================
+
+class IdleBackoff:
+    """Idle poll delay: initial, doubling up to maximum; reset() after a command."""
+
+    def __init__(self, initial: float = 0.5, maximum: float = 2.0, factor: float = 2.0):
+        self.initial = initial
+        self.maximum = maximum
+        self.factor = factor
+        self._current = initial
+
+    def next_delay(self) -> float:
+        delay = self._current
+        self._current = min(self._current * self.factor, self.maximum)
+        return delay
+
+    def reset(self) -> None:
+        self._current = self.initial
+
+
+async def run_command_loop(
+    poll: Callable[[], Optional[Dict[str, Any]]],
+    handle: Callable[[Dict[str, Any]], Awaitable[bool]],
+    wait: Callable[[float], Awaitable[bool]],
+    backoff: Optional[IdleBackoff] = None,
+) -> str:
+    """Serve IPC commands until close_env or shutdown.
+
+    poll() -> command or None; handle(command) -> False to stop; wait(delay) -> True on shutdown.
+    Returns "closed" or "shutdown".
+    """
+    backoff = backoff or IdleBackoff()
+    while True:
+        command = poll()
+        if command is not None:
+            backoff.reset()
+            if not await handle(command):
+                return "closed"
+            continue
+        if await wait(backoff.next_delay()):
+            return "shutdown"
+
+
+async def wait_for_shutdown(event: asyncio.Event, delay: float) -> bool:
+    """Sleep up to delay seconds; True as soon as the shutdown event is set."""
+    try:
+        await asyncio.wait_for(event.wait(), timeout=delay)
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+
+def simulation_start_minute(time_config: Dict[str, Any], total_rounds: int, full_rounds: int) -> int:
+    """Minute of day where the simulated clock starts.
+
+    A full run starts at 00:00 as before. A run cut short by max_rounds would otherwise
+    replay only the off-peak night hours (no activity), so it starts at the first peak hour
+    (else the first morning/work hour). An explicit time_config['start_hour'] always wins.
+    """
+    if time_config.get("start_hour") is not None:
+        return (int(time_config["start_hour"]) % 24) * 60
+    if total_rounds >= full_rounds:
+        return 0
+    for key in ("peak_hours", "morning_hours", "work_hours"):
+        hours = time_config.get(key) or []
+        if hours:
+            return (int(min(hours)) % 24) * 60
+    return 0
+
+
 def get_active_agents_for_round(
     env,
     config: Dict[str, Any],
@@ -1126,19 +1450,20 @@ async def run_twitter_simulation(
     
     log_info("初始化...")
     
-    # Twitter 使用通用 LLM 配置
-    model = create_model(config, use_boost=False)
-    
     # OASIS Twitter使用CSV格式
     profile_path = os.path.join(simulation_dir, "twitter_profiles.csv")
     if not os.path.exists(profile_path):
         log_info(f"错误: Profile文件不存在: {profile_path}")
         return result
     
-    result.agent_graph = await generate_twitter_agent_graph(
-        profile_path=profile_path,
-        model=model,
-        available_actions=TWITTER_ACTIONS,
+    # 每个 Agent 按 llm_profile 使用自己的模型；无 llm_profile 时使用通用 LLM 配置
+    result.agent_graph = await build_platform_agent_graph(
+        "twitter",
+        profile_path,
+        config,
+        TWITTER_ACTIONS,
+        legacy_model_factory=lambda: create_model(config, use_boost=False),
+        log=log_info,
     )
     
     # 从配置文件获取 Agent 真实名称映射（使用 entity_name 而非默认的 Agent_X）
@@ -1223,6 +1548,7 @@ async def run_twitter_simulation(
         if total_rounds < original_rounds:
             log_info(f"轮数已截断: {original_rounds} -> {total_rounds} (max_rounds={max_rounds})")
     
+    start_minute = simulation_start_minute(time_config, total_rounds, (total_hours * 60) // minutes_per_round)
     start_time = datetime.now()
     
     for round_num in range(total_rounds):
@@ -1232,7 +1558,7 @@ async def run_twitter_simulation(
                 main_logger.info(f"收到退出信号，在第 {round_num + 1} 轮停止模拟")
             break
         
-        simulated_minutes = round_num * minutes_per_round
+        simulated_minutes = start_minute + round_num * minutes_per_round
         simulated_hour = (simulated_minutes // 60) % 24
         simulated_day = simulated_minutes // (60 * 24) + 1
         
@@ -1318,18 +1644,19 @@ async def run_reddit_simulation(
     
     log_info("初始化...")
     
-    # Reddit 使用加速 LLM 配置（如果有的话，否则回退到通用配置）
-    model = create_model(config, use_boost=True)
-    
     profile_path = os.path.join(simulation_dir, "reddit_profiles.json")
     if not os.path.exists(profile_path):
         log_info(f"错误: Profile文件不存在: {profile_path}")
         return result
     
-    result.agent_graph = await generate_reddit_agent_graph(
-        profile_path=profile_path,
-        model=model,
-        available_actions=REDDIT_ACTIONS,
+    # 每个 Agent 按 llm_profile 使用自己的模型；无 llm_profile 时使用加速 LLM 配置（否则回退到通用配置）
+    result.agent_graph = await build_platform_agent_graph(
+        "reddit",
+        profile_path,
+        config,
+        REDDIT_ACTIONS,
+        legacy_model_factory=lambda: create_model(config, use_boost=True),
+        log=log_info,
     )
     
     # 从配置文件获取 Agent 真实名称映射（使用 entity_name 而非默认的 Agent_X）
@@ -1422,6 +1749,7 @@ async def run_reddit_simulation(
         if total_rounds < original_rounds:
             log_info(f"轮数已截断: {original_rounds} -> {total_rounds} (max_rounds={max_rounds})")
     
+    start_minute = simulation_start_minute(time_config, total_rounds, (total_hours * 60) // minutes_per_round)
     start_time = datetime.now()
     
     for round_num in range(total_rounds):
@@ -1431,7 +1759,7 @@ async def run_reddit_simulation(
                 main_logger.info(f"收到退出信号，在第 {round_num + 1} 轮停止模拟")
             break
         
-        simulated_minutes = round_num * minutes_per_round
+        simulated_minutes = start_minute + round_num * minutes_per_round
         simulated_hour = (simulated_minutes // 60) % 24
         simulated_day = simulated_minutes // (60 * 24) + 1
         
@@ -1610,18 +1938,13 @@ async def main():
         )
         ipc_handler.update_status("alive")
         
-        # 等待命令循环（使用全局 _shutdown_event）
+        # 等待命令循环（使用全局 _shutdown_event）；空闲时轮询间隔 0.5s -> 2s 递增，收到命令后重置
         try:
-            while not _shutdown_event.is_set():
-                should_continue = await ipc_handler.process_commands()
-                if not should_continue:
-                    break
-                # 使用 wait_for 替代 sleep，这样可以响应 shutdown_event
-                try:
-                    await asyncio.wait_for(_shutdown_event.wait(), timeout=0.5)
-                    break  # 收到退出信号
-                except asyncio.TimeoutError:
-                    pass  # 超时继续循环
+            await run_command_loop(
+                ipc_handler.poll_command,
+                ipc_handler.handle_command,
+                lambda delay: wait_for_shutdown(_shutdown_event, delay),
+            )
         except KeyboardInterrupt:
             print("\n收到中断信号")
         except asyncio.CancelledError:
@@ -1648,6 +1971,7 @@ async def main():
     log_manager.info(f"  - {os.path.join(simulation_dir, 'twitter', 'actions.jsonl')}")
     log_manager.info(f"  - {os.path.join(simulation_dir, 'reddit', 'actions.jsonl')}")
     log_manager.info("=" * 60)
+    log_manager.close()
 
 
 def setup_signal_handlers(loop=None):
