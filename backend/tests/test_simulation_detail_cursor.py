@@ -20,10 +20,7 @@ from app.utils import locale as locale_module
 
 
 PLATFORM_RANK = {"twitter": 0, "reddit": 1}
-KEYS_FILE = (
-    Path(__file__).resolve().parents[2]
-    / ".omo" / "work" / "keys" / "api-simulation-runner.json"
-)
+LOCALES_DIR = Path(__file__).resolve().parents[2] / "locales"
 
 
 @pytest.fixture
@@ -319,8 +316,12 @@ def test_persona_presets_follow_request_locale(client):
 
 
 def test_interview_prefix_comes_from_locale_keys(monkeypatch):
-    keys = json.loads(KEYS_FILE.read_text(encoding="utf-8"))
-    entry = keys["api.interviewPromptPrefix"]
+    entry = {
+        locale: json.loads(
+            (LOCALES_DIR / f"{locale}.json").read_text(encoding="utf-8")
+        )["api"]["interviewPromptPrefix"]
+        for locale in ("zh", "en", "ko")
+    }
     for locale in ("zh", "en", "ko"):
         api_table = locale_module._translations[locale].setdefault("api", {})
         monkeypatch.setitem(api_table, "interviewPromptPrefix", entry[locale])
