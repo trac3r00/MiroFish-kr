@@ -21,7 +21,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { availableLocales } from '@/i18n/index.js'
+import { availableLocales, loadLocale } from '@/i18n/index.js'
 
 const { locale } = useI18n()
 const open = ref(false)
@@ -36,7 +36,8 @@ const toggleDropdown = () => {
   open.value = !open.value
 }
 
-const switchLocale = (key) => {
+const switchLocale = async (key) => {
+  await loadLocale(key)
   locale.value = key
   localStorage.setItem('locale', key)
   document.documentElement.lang = key

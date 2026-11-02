@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import threading
 from flask import request, has_request_context
 
@@ -19,6 +20,52 @@ for filename in os.listdir(_locales_dir):
         with open(os.path.join(_locales_dir, filename), 'r', encoding='utf-8') as f:
             _translations[locale_name] = json.load(f)
 
+_supported_locales = set(_translations)
+_quality_re = re.compile(r'^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$')
+
+
+def _negotiate_locale(header):
+    if not isinstance(header, str):
+        return 'en'
+
+    candidates = []
+    for order, item in enumerate(header[:1000].split(',')[:30]):
+        parts = item.strip().split(';')
+        language_range = parts[0].strip().lower()
+        if language_range == '*':
+            continue
+        if not re.fullmatch(r'[a-z]{1,8}(?:-[a-z0-9]{1,8})*', language_range):
+            continue
+        quality = 1.0
+        valid = True
+        for parameter in parts[1:]:
+            name, separator, value = parameter.strip().partition('=')
+            if not separator or name.strip().lower() != 'q':
+                continue
+            if not _quality_re.fullmatch(value.strip()):
+                valid = False
+                break
+            quality = float(value.strip())
+        if valid and quality > 0:
+            candidates.append((quality, order, language_range))
+
+    for _, _, language_range in sorted(candidates, key=lambda item: (-item[0], item[1])):
+        if language_range in _supported_locales:
+            return language_range
+        primary = language_range.split('-', 1)[0]
+        if primary in _supported_locales:
+            return primary
+    return 'en'
+
+
+def _translation(locale, key):
+    value = _translations.get(locale, {})
+    for part in key.split('.'):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value
+
 
 def set_locale(locale: str):
     """Set locale for current thread. Call at the start of background threads."""
@@ -27,32 +74,15 @@ def set_locale(locale: str):
 
 def get_locale() -> str:
     if has_request_context():
-        raw = request.headers.get('Accept-Language', 'zh')
-        return raw if raw in _translations else 'zh'
-    return getattr(_thread_local, 'locale', 'zh')
+        return _negotiate_locale(request.headers.get('Accept-Language'))
+    locale = getattr(_thread_local, 'locale', 'en')
+    return locale if locale in _supported_locales else 'en'
 
 
 def t(key: str, **kwargs) -> str:
     locale = get_locale()
-    messages = _translations.get(locale, _translations.get('zh', {}))
-
-    value = messages
-    for part in key.split('.'):
-        if isinstance(value, dict):
-            value = value.get(part)
-        else:
-            value = None
-            break
-
-    if value is None:
-        value = _translations.get('zh', {})
-        for part in key.split('.'):
-            if isinstance(value, dict):
-                value = value.get(part)
-            else:
-                value = None
-                break
-
+    value = next((found for candidate in (locale, 'en', 'zh')
+                  if (found := _translation(candidate, key)) is not None), None)
     if value is None:
         return key
 
@@ -65,5 +95,5 @@ def t(key: str, **kwargs) -> str:
 
 def get_language_instruction() -> str:
     locale = get_locale()
-    lang_config = _languages.get(locale, _languages.get('zh', {}))
-    return lang_config.get('llmInstruction', '请使用中文回答。')
+    lang_config = _languages.get(locale, _languages.get('en', {}))
+    return lang_config.get('llmInstruction', 'Please respond in English.')

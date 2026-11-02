@@ -1,7 +1,13 @@
 <!doctype html>
-<html lang="zh">
+<html lang="en">
   <head>
-    <script>document.documentElement.lang = localStorage.getItem('locale') || 'zh'</script>
+    <script>
+      const savedLocale = localStorage.getItem('locale')
+      const browserLocale = (navigator.languages || [navigator.language || 'en'])
+        .map(language => language.toLowerCase().split('-')[0])
+        .find(Boolean)
+      document.documentElement.lang = savedLocale || browserLocale || 'en'
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@100..800&family=Noto+Sans+SC:wght@300;400;500;700;800;900&family=Space+Grotesk:wght@300..700&display=swap" rel="stylesheet">
