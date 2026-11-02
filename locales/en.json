@@ -31,7 +31,8 @@
     "statusGenerating": "Generating",
     "statusProcessing": "Processing",
     "yes": "Yes",
-    "no": "No"
+    "no": "No",
+    "statusRunning": "Running"
   },
   "meta": {
     "title": "MiroFish - Predict Everything",
@@ -77,7 +78,15 @@
     "promptPlaceholder": "// Describe your simulation or prediction requirement in natural language",
     "engineBadge": "Engine: MiroFish-V1.0",
     "startEngine": "Start Engine",
-    "initializing": "Initializing..."
+    "initializing": "Initializing...",
+    "runMode": {
+      "label": "Run mode",
+      "quick": "Quick test",
+      "quickDesc": "10 rounds, about 5-10 min. See how it works first.",
+      "full": "Full scale",
+      "fullDesc": "Uses the generated round count. Often an hour or more and more AI usage.",
+      "auto": "Run all the way to the report (notify me when done)"
+    }
   },
   "main": {
     "layoutGraph": "Graph",
@@ -123,7 +132,8 @@
     "generatedEntityTypes": "GENERATED ENTITY TYPES",
     "generatedRelationTypes": "GENERATED RELATION TYPES",
     "systemDashboard": "SYSTEM DASHBOARD",
-    "noProject": "NO_PROJECT"
+    "noProject": "NO_PROJECT",
+    "existingSimulationPrompt": "This project already has a simulation created at {time}.\nPress OK to continue with it, or Cancel to create a new one (this uses AI credits again)."
   },
   "step2": {
     "simInstanceInit": "Simulation Instance Initialization",
@@ -266,7 +276,7 @@
     "platformTwitter": "Info Plaza",
     "platformReddit": "Topic Community",
     "statRound": "ROUND",
-    "statTime": "TIME",
+    "statTime": "SIM TIME",
     "statActs": "ACTS",
     "availableActions": "Available Actions",
     "totalEvents": "TOTAL EVENTS",
@@ -386,7 +396,8 @@
     "showLess": "Show Less",
     "keyQuotes": "Key Quotes",
     "interviewSummary": "Interview Summary",
-    "logWarningWord": "Warning"
+    "logWarningWord": "Warning",
+    "downloadReport": "Download report (Markdown)"
   },
   "step5": {
     "interactiveTools": "Interactive Tools",
@@ -456,7 +467,8 @@
     "itemsCount": "{count} items",
     "entityTypes": "Entity Types",
     "showEdgeLabels": "Show Edge Labels",
-    "unnamed": "Unnamed"
+    "unnamed": "Unnamed",
+    "waitingFirstNodes": "Building the graph. Entities appear here as soon as the first ones are written..."
   },
   "history": {
     "title": "Simulation History",
@@ -574,12 +586,12 @@
     "simGraphOutdated": "This simulation uses an older graph. Prepare it again before enabling graph memory.",
     "graphReadByReport": "A report is reading this graph. Wait for report generation to finish before enabling graph memory updates.",
     "simAlreadyRunning": "The simulation is already running or finishing: {id}",
-    "graphUpdaterInitFailed": "Failed to initialize the Zep graph updater: {error}",
-    "graphCleanupFailed": "Failed to clean up Zep graph writes: {error}",
+    "graphUpdaterInitFailed": "Failed to initialize the graph memory updater: {error}",
+    "graphCleanupFailed": "Failed to clean up graph writes: {error}",
     "processTerminateFailed": "Failed to terminate the subprocess: {error}",
     "logCloseFailed": "Failed to close the log file: {error}",
     "processExitError": "Process exited with code {code}. Error: {error}",
-    "graphIngestionIncomplete": "Zep graph ingestion did not finish completely: {error}",
+    "graphIngestionIncomplete": "Graph ingestion did not finish completely: {error}",
     "simNotRunning": "The simulation is not running: {id}, status={status}",
     "simStopFailed": "Failed to stop the simulation",
     "simStopNotTerminal": "The simulation did not reach a final state after stopping: {id}, status={status}",
@@ -593,15 +605,16 @@
       "configError": "LLM configuration error: {error}",
       "oauthListenerFailed": "Could not start the local sign-in callback listener. Check that a 127.0.0.1 port is available."
     },
-    "simulationDirectoryNotFound": "Simulation directory not found."
+    "simulationDirectoryNotFound": "Simulation directory not found.",
+    "prepareAlreadyRunning": "Setup is already running; reconnected to it"
   },
   "progress": {
     "initGraphService": "Initializing graph build service...",
     "textChunking": "Chunking text...",
-    "creatingZepGraph": "Creating Zep graph...",
+    "creatingZepGraph": "Creating the graph...",
     "settingOntology": "Setting ontology definition...",
     "addingChunks": "Adding {count} text chunks...",
-    "waitingZepProcess": "Waiting for Zep to process data...",
+    "waitingZepProcess": "Waiting for the graph to process data...",
     "fetchingGraphData": "Fetching graph data...",
     "graphBuildComplete": "Graph build complete",
     "buildFailed": "Build failed: {error}",
@@ -615,12 +628,12 @@
     "noEpisodesWait": "No episodes to wait for",
     "waitingEpisodes": "Waiting for {count} text chunks to process...",
     "episodesTimeout": "Some chunks timed out, {completed}/{total} completed",
-    "zepProcessing": "Zep processing... {completed}/{total} done, {pending} pending ({elapsed}s)",
+    "zepProcessing": "Building the graph... {completed}/{total} done, {pending} pending ({elapsed}s)",
     "processingComplete": "Processing complete: {completed}/{total}",
     "taskComplete": "Task complete",
     "taskFailed": "Task failed",
     "startPreparingEnv": "Preparing simulation environment...",
-    "connectingZepGraph": "Connecting to Zep graph...",
+    "connectingZepGraph": "Connecting to the graph...",
     "readingNodeData": "Reading node data...",
     "readingComplete": "Done, {count} entities found",
     "startGenerating": "Starting generation...",
@@ -700,7 +713,7 @@
     "detectedExistingPrep": "Found an existing preparation, reusing it",
     "prepareTaskStarted": "Preparation task started",
     "prepareTaskId": "  └─ Task ID: {taskId}",
-    "zepEntitiesFound": "Found {count} entities from Zep graph",
+    "zepEntitiesFound": "Found {count} entities in the graph",
     "entityTypes": "  └─ Entity types: {types}",
     "startPollingProgress": "Polling preparation progress...",
     "prepareFailed": "Preparation failed: {error}",
@@ -854,8 +867,8 @@
   },
   "console": {
     "zepToolsInitialized": "ZepToolsService initialized",
-    "zepRetryAttempt": "Zep {operation} attempt {attempt} failed: {error}, retrying in {delay}s...",
-    "zepAllRetriesFailed": "Zep {operation} failed after {retries} attempts: {error}",
+    "zepRetryAttempt": "Graph {operation} attempt {attempt} failed: {error}, retrying in {delay}s...",
+    "zepAllRetriesFailed": "Graph {operation} failed after {retries} attempts: {error}",
     "graphSearch": "Graph search: graph_id={graphId}, query={query}...",
     "graphSearchOp": "Graph search (graph={graphId})",
     "searchComplete": "Search complete: found {count} relevant facts",
@@ -1072,5 +1085,59 @@
     "unsupported_format": "Unsupported file format: {suffix}",
     "unprocessable_format": "Cannot process this file format: {suffix}",
     "pymupdf_required": "PyMuPDF is required: pip install PyMuPDF"
+  },
+  "timer": {
+    "elapsed": "Elapsed {time}",
+    "took": "Took {time}",
+    "remaining": "About {time} left",
+    "remainingLabel": "Time left",
+    "calculating": "Estimating time left...",
+    "lessThanMinute": "Less than a minute left",
+    "hourMin": "{h}h {m}m",
+    "minSec": "{m}m {s}s",
+    "minutes": "{m} min",
+    "sec": "{s}s",
+    "realTime": "Real time",
+    "ingesting": "Rounds are done; writing actions into graph memory ({n} left)",
+    "finishing": "Wrapping up..."
+  },
+  "estimate": {
+    "title": "Before you start",
+    "time": "About {minutes} min (based on {runs} past runs on this machine)",
+    "timeUnknown": "First run: a time estimate appears after one run finishes",
+    "tokens": "About {turns} AI calls, roughly {tokens} tokens",
+    "turns": "About {turns} agent AI calls over {rounds} rounds (cost scales with this)"
+  },
+  "guide": {
+    "progress": "Step {current} of 5 · {name}",
+    "chip": {
+      "working": "Working",
+      "action": "Your turn",
+      "error": "Problem"
+    },
+    "error": "Something went wrong. Check the system log below for the cause, then try again.",
+    "s1": {
+      "working": "Reading your documents and building the knowledge graph. Just wait; the next step will show up here.",
+      "action": "The graph is ready. Press \"{button}\" to continue."
+    },
+    "s2": {
+      "working": "Creating a persona and behavior settings for each actor in the graph. Just wait.",
+      "action": "Setup is done. Check the rounds and time estimate, then press \"{button}\".",
+      "choose": "Pick the persona mix for your agents, then press Start."
+    },
+    "s3": {
+      "working": "Agents are posting and reacting. The report button turns on when they finish.",
+      "action": "The simulation is done. Press \"{button}\" to write the report.",
+      "ingesting": "The rounds are done. The last actions are being written into graph memory; the report unlocks when that finishes."
+    },
+    "s4": {
+      "working": "The report agent is investigating the simulation and writing the report.",
+      "action": "The report is ready. Save it with \"{button}\", or ask follow-up questions in deep interaction."
+    },
+    "s5": {
+      "working": "Writing an answer...",
+      "action": "Ask the report agent or any single agent a question."
+    },
+    "notifyDone": "MiroFish: your report is ready"
   }
 }

@@ -1124,6 +1124,9 @@ class SimulationRunner:
                                             f"所有平台已结束，等待进程与图谱写入完成: "
                                             f"{state.simulation_id}"
                                         )
+                                        cls._drain_graph_memory_after_rounds(
+                                            state.simulation_id
+                                        )
                                 
                                 # 更新轮次信息（从 round_end 事件）
                                 elif event_type == "round_end":
@@ -1176,6 +1179,118 @@ class SimulationRunner:
             logger.warning(f"读取动作日志失败: {log_path}, error={e}")
             return position
     
+    @classmethod
+    def _drain_graph_memory_after_rounds(cls, simulation_id: str) -> None:
+        """Drain graph memory as soon as every platform logged simulation_end.
+
+        The process stays alive afterwards to serve interviews, so waiting for
+        process exit would block report generation until someone closes the
+        environment. Runs under the finalization lock so it never overlaps the
+        exit-time drain (graph.add must not be replayed).
+        """
+        if not cls._graph_memory_enabled.get(simulation_id, False):
+            return
+
+        def drain():
+            with cls._finalization_lock(simulation_id):
+                if not cls._graph_memory_enabled.get(simulation_id, False):
+                    return
+                try:
+                    ZepGraphMemoryManager.stop_updater(simulation_id)
+                except Exception as error:
+                    # The updater stays registered, so the report barrier keeps
+                    # blocking and the exit-time finalization surfaces the error.
+                    logger.error(
+                        "轮次结束后的图谱写入未完成: simulation_id=%s, error=%s",
+                        simulation_id,
+                        error,
+                    )
+                    return
+                cls._graph_memory_enabled.pop(simulation_id, None)
+                logger.info("轮次结束，图谱写入已完成: simulation_id=%s", simulation_id)
+
+        threading.Thread(
+            target=drain,
+            name=f"graph-drain-{simulation_id}",
+            daemon=True,
+        ).start()
+
+    @classmethod
+    def estimate_run(
+        cls,
+        simulation_id: str,
+        max_rounds: Optional[int] = None,
+        tokens_per_turn: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Pre-start estimate: wall time from past runs on this machine, agent
+        turns from the time config, tokens from the observed per-turn average."""
+        config_path = os.path.join(cls.RUN_STATE_DIR, simulation_id, "simulation_config.json")
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        time_config = config.get("time_config") or {}
+        agents = len(config.get("agent_configs") or [])
+        minutes_per_round = max(1, int(time_config.get("minutes_per_round") or 60))
+        rounds = int(max_rounds or 0) or int(
+            (time_config.get("total_simulation_hours") or 0) * 60 // minutes_per_round
+        )
+
+        per_round_seconds = []
+        for entry in os.scandir(cls.RUN_STATE_DIR):
+            if not entry.is_dir() or entry.name == simulation_id:
+                continue
+            try:
+                with open(os.path.join(entry.path, "run_state.json"), "r", encoding="utf-8") as f:
+                    past = json.load(f)
+                done_rounds = int(past.get("current_round") or 0)
+                # updated_at tracks the last round; completed_at can be much later
+                # because the environment stays open for interviews.
+                span = (
+                    datetime.fromisoformat(past["updated_at"])
+                    - datetime.fromisoformat(past["started_at"])
+                ).total_seconds()
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            if done_rounds >= 3 and span > 0:
+                per_round_seconds.append(span / done_rounds)
+
+        per_round_seconds.sort()
+        seconds_per_round = (
+            per_round_seconds[len(per_round_seconds) // 2] if per_round_seconds else None
+        )
+        agents_per_hour = (
+            (time_config.get("agents_per_hour_min") or 0)
+            + (time_config.get("agents_per_hour_max") or 0)
+        ) / 2
+        turns_per_round = min(
+            float(agents), max(1.0, agents_per_hour * minutes_per_round / 60)
+        ) if agents else 0.0
+        agent_turns = round(turns_per_round * rounds)
+        return {
+            "rounds": rounds,
+            "agents": agents,
+            "history_runs": len(per_round_seconds),
+            "seconds_per_round": seconds_per_round,
+            "estimated_seconds": (
+                round(seconds_per_round * rounds) if seconds_per_round else None
+            ),
+            "agent_turns": agent_turns,
+            "tokens_per_turn": round(tokens_per_turn) if tokens_per_turn else None,
+            "estimated_tokens": (
+                round(tokens_per_turn * agent_turns) if tokens_per_turn else None
+            ),
+        }
+
+    @classmethod
+    def rounds_finished(cls, state: Optional[SimulationRunState]) -> bool:
+        """True once every platform finished its rounds and graph memory drained,
+        while the process may still be waiting for interview commands."""
+        return (
+            state is not None
+            and state.runner_status == RunnerStatus.RUNNING
+            and not cls._graph_memory_enabled.get(state.simulation_id, False)
+            and cls._check_all_platforms_completed(state)
+        )
+
     @classmethod
     def _check_all_platforms_completed(cls, state: SimulationRunState) -> bool:
         """

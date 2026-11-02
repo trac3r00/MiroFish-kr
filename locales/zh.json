@@ -31,7 +31,8 @@
     "statusGenerating": "生成中",
     "statusProcessing": "处理中",
     "yes": "是",
-    "no": "否"
+    "no": "否",
+    "statusRunning": "运行中"
   },
   "meta": {
     "title": "MiroFish - 预测万物",
@@ -77,7 +78,15 @@
     "promptPlaceholder": "// 用自然语言输入模拟或预测需求（例.武大若发布撤销肖某处分的公告，会引发什么舆情走向）",
     "engineBadge": "引擎: MiroFish-V1.0",
     "startEngine": "启动引擎",
-    "initializing": "初始化中..."
+    "initializing": "初始化中...",
+    "runMode": {
+      "label": "运行方式",
+      "quick": "快速试跑",
+      "quickDesc": "10 轮，约 5–10 分钟。先看看效果。",
+      "full": "完整规模",
+      "fullDesc": "使用自动生成的轮数。通常 1 小时以上，AI 用量更多。",
+      "auto": "自动进行到报告完成（完成时通知我）"
+    }
   },
   "main": {
     "layoutGraph": "图谱",
@@ -123,7 +132,8 @@
     "generatedEntityTypes": "已生成的实体类型",
     "generatedRelationTypes": "已生成的关系类型",
     "systemDashboard": "系统仪表盘",
-    "noProject": "无项目"
+    "noProject": "无项目",
+    "existingSimulationPrompt": "这个项目在 {time} 已经创建过模拟。\n点击“确定”继续查看那个模拟，点击“取消”新建一个（会重新消耗 AI 用量）。"
   },
   "step2": {
     "simInstanceInit": "模拟实例初始化",
@@ -266,7 +276,7 @@
     "platformTwitter": "信息广场",
     "platformReddit": "话题社区",
     "statRound": "轮次",
-    "statTime": "时间",
+    "statTime": "模拟内时间",
     "statActs": "动作",
     "availableActions": "可用动作",
     "totalEvents": "事件总数",
@@ -386,7 +396,8 @@
     "showLess": "收起",
     "keyQuotes": "关键引言",
     "interviewSummary": "采访摘要",
-    "logWarningWord": "警告"
+    "logWarningWord": "警告",
+    "downloadReport": "下载报告（Markdown）"
   },
   "step5": {
     "interactiveTools": "Interactive Tools",
@@ -456,7 +467,8 @@
     "itemsCount": "{count} 条",
     "entityTypes": "实体类型",
     "showEdgeLabels": "显示边标签",
-    "unnamed": "未命名"
+    "unnamed": "未命名",
+    "waitingFirstNodes": "图谱正在构建，第一批实体写入后会显示在这里…"
   },
   "history": {
     "title": "推演记录",
@@ -574,12 +586,12 @@
     "simGraphOutdated": "该模拟引用的是旧图谱，启用图谱记忆前请重新准备",
     "graphReadByReport": "有报告正在读取该图谱，请等待报告生成完成后再启用图谱记忆更新",
     "simAlreadyRunning": "模拟已在运行或结束处理中: {id}",
-    "graphUpdaterInitFailed": "Zep图谱更新器初始化失败: {error}",
-    "graphCleanupFailed": "Zep图谱写入清理失败: {error}",
+    "graphUpdaterInitFailed": "无法初始化图谱记忆更新器：{error}",
+    "graphCleanupFailed": "无法清理图谱写入：{error}",
     "processTerminateFailed": "子进程终止失败: {error}",
     "logCloseFailed": "日志关闭失败: {error}",
     "processExitError": "进程退出码: {code}, 错误: {error}",
-    "graphIngestionIncomplete": "Zep图谱写入未完整完成: {error}",
+    "graphIngestionIncomplete": "图谱写入未能全部完成：{error}",
     "simNotRunning": "模拟未在运行: {id}, status={status}",
     "simStopFailed": "模拟停止失败",
     "simStopNotTerminal": "模拟停止未达到终态: {id}, status={status}",
@@ -593,15 +605,16 @@
       "configError": "LLM 配置有误：{error}",
       "oauthListenerFailed": "无法启动本地登录回调监听，请检查 127.0.0.1 端口是否可用。"
     },
-    "simulationDirectoryNotFound": "模拟目录不存在"
+    "simulationDirectoryNotFound": "模拟目录不存在",
+    "prepareAlreadyRunning": "准备任务仍在进行，已连接到正在运行的任务"
   },
   "progress": {
     "initGraphService": "初始化图谱构建服务...",
     "textChunking": "文本分块中...",
-    "creatingZepGraph": "创建Zep图谱...",
+    "creatingZepGraph": "正在创建图谱…",
     "settingOntology": "设置本体定义...",
     "addingChunks": "开始添加 {count} 个文本块...",
-    "waitingZepProcess": "等待Zep处理数据...",
+    "waitingZepProcess": "正在等待图谱处理数据…",
     "fetchingGraphData": "获取图谱数据...",
     "graphBuildComplete": "图谱构建完成",
     "buildFailed": "构建失败: {error}",
@@ -615,12 +628,12 @@
     "noEpisodesWait": "无需等待（没有 episode）",
     "waitingEpisodes": "开始等待 {count} 个文本块处理...",
     "episodesTimeout": "部分文本块超时，已完成 {completed}/{total}",
-    "zepProcessing": "Zep处理中... {completed}/{total} 完成, {pending} 待处理 ({elapsed}秒)",
+    "zepProcessing": "图谱处理中… 已完成 {completed}/{total}，待处理 {pending}（{elapsed} 秒）",
     "processingComplete": "处理完成: {completed}/{total}",
     "taskComplete": "任务完成",
     "taskFailed": "任务失败",
     "startPreparingEnv": "开始准备模拟环境...",
-    "connectingZepGraph": "正在连接Zep图谱...",
+    "connectingZepGraph": "正在连接图谱…",
     "readingNodeData": "正在读取节点数据...",
     "readingComplete": "完成，共 {count} 个实体",
     "startGenerating": "开始生成...",
@@ -700,7 +713,7 @@
     "detectedExistingPrep": "检测到已有完成的准备工作，直接使用",
     "prepareTaskStarted": "准备任务已启动",
     "prepareTaskId": "  └─ Task ID: {taskId}",
-    "zepEntitiesFound": "从Zep图谱读取到 {count} 个实体",
+    "zepEntitiesFound": "从图谱中找到 {count} 个实体",
     "entityTypes": "  └─ 实体类型: {types}",
     "startPollingProgress": "开始轮询准备进度...",
     "prepareFailed": "准备失败: {error}",
@@ -854,8 +867,8 @@
   },
   "console": {
     "zepToolsInitialized": "ZepToolsService 初始化完成",
-    "zepRetryAttempt": "Zep {operation} 第 {attempt} 次尝试失败: {error}, {delay}秒后重试...",
-    "zepAllRetriesFailed": "Zep {operation} 在 {retries} 次尝试后仍失败: {error}",
+    "zepRetryAttempt": "图谱 {operation} 第 {attempt} 次尝试失败：{error}，{delay} 秒后重试…",
+    "zepAllRetriesFailed": "图谱 {operation} 在 {retries} 次尝试后失败：{error}",
     "graphSearch": "图谱搜索: graph_id={graphId}, query={query}...",
     "graphSearchOp": "图谱搜索(graph={graphId})",
     "searchComplete": "搜索完成: 找到 {count} 条相关事实",
@@ -1072,5 +1085,59 @@
     "unsupported_format": "不支持的文件格式: {suffix}",
     "unprocessable_format": "无法处理的文件格式: {suffix}",
     "pymupdf_required": "需要安装PyMuPDF: pip install PyMuPDF"
+  },
+  "timer": {
+    "elapsed": "已用 {time}",
+    "took": "共用时 {time}",
+    "remaining": "预计还需 {time}",
+    "remainingLabel": "预计剩余",
+    "calculating": "正在估算剩余时间…",
+    "lessThanMinute": "不到 1 分钟",
+    "hourMin": "{h} 小时 {m} 分",
+    "minSec": "{m} 分 {s} 秒",
+    "minutes": "{m} 分钟",
+    "sec": "{s} 秒",
+    "realTime": "实际耗时",
+    "ingesting": "轮次已结束，正在把行动写入图谱记忆（剩余 {n} 项）",
+    "finishing": "正在收尾…"
+  },
+  "estimate": {
+    "title": "开始前预估",
+    "time": "约 {minutes} 分钟（按本机最近 {runs} 次运行的平均速度）",
+    "timeUnknown": "首次运行，完成一次后会显示预计时间",
+    "tokens": "AI 调用约 {turns} 次，约 {tokens} 个 token",
+    "turns": "{rounds} 轮中智能体约调用 AI {turns} 次（用量与次数成正比）"
+  },
+  "guide": {
+    "progress": "第 {current}/5 步 · {name}",
+    "chip": {
+      "working": "等待中",
+      "action": "该你了",
+      "error": "出现问题"
+    },
+    "error": "出了点问题。请在下方系统日志中查看原因后重试。",
+    "s1": {
+      "working": "正在读取文档并构建知识图谱。只需等待，完成后会在这里告诉你下一步。",
+      "action": "图谱已就绪。点击“{button}”进入下一步。"
+    },
+    "s2": {
+      "working": "正在为图谱中的每个角色生成人设和行为设置。只需等待。",
+      "action": "准备完成。确认轮数和预计时间后，点击“{button}”。",
+      "choose": "选择智能体的人设构成后，点击“开始”。"
+    },
+    "s3": {
+      "working": "智能体正在发帖和互动。结束后报告按钮会亮起。",
+      "action": "模拟已结束。点击“{button}”生成报告。",
+      "ingesting": "模拟轮次已结束，正在把最后的行动写入图谱记忆。完成后会自动开放报告。"
+    },
+    "s4": {
+      "working": "报告智能体正在调查模拟结果并撰写报告。",
+      "action": "报告已完成。可用“{button}”保存，或进入深度互动继续提问。"
+    },
+    "s5": {
+      "working": "正在生成回答…",
+      "action": "可以向报告智能体或单个智能体提问。"
+    },
+    "notifyDone": "MiroFish：报告已完成"
   }
 }

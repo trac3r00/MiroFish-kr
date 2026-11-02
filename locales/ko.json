@@ -31,7 +31,8 @@
     "statusGenerating": "생성 중",
     "statusProcessing": "처리 중",
     "yes": "예",
-    "no": "아니요"
+    "no": "아니요",
+    "statusRunning": "실행 중"
   },
   "meta": {
     "title": "MiroFish - 모든 것을 예측하다",
@@ -77,7 +78,15 @@
     "promptPlaceholder": "// 시뮬레이션하거나 예측하고 싶은 내용을 자유롭게 적어 주세요",
     "engineBadge": "엔진: MiroFish-V1.0",
     "startEngine": "엔진 시작",
-    "initializing": "준비 중…"
+    "initializing": "준비 중…",
+    "runMode": {
+      "label": "실행 방식",
+      "quick": "빠른 시험",
+      "quickDesc": "10라운드, 약 5~10분. 먼저 어떻게 나오는지 볼 때.",
+      "full": "실제 규모",
+      "fullDesc": "자동으로 정한 라운드 수 그대로. 보통 1시간 이상, AI 사용량도 많아요.",
+      "auto": "보고서까지 알아서 진행 (끝나면 알림)"
+    }
   },
   "main": {
     "layoutGraph": "그래프",
@@ -123,7 +132,8 @@
     "generatedEntityTypes": "생성된 엔티티 유형",
     "generatedRelationTypes": "생성된 관계 유형",
     "systemDashboard": "시스템 대시보드",
-    "noProject": "프로젝트 없음"
+    "noProject": "프로젝트 없음",
+    "existingSimulationPrompt": "이 프로젝트에는 {time}에 만든 시뮬레이션이 이미 있어요.\n확인을 누르면 그 시뮬레이션을 이어서 보고, 취소를 누르면 새로 만들어요(AI 사용량이 다시 들어요)."
   },
   "step2": {
     "simInstanceInit": "시뮬레이션 인스턴스 준비",
@@ -266,7 +276,7 @@
     "platformTwitter": "정보 광장",
     "platformReddit": "토픽 커뮤니티",
     "statRound": "라운드",
-    "statTime": "시간",
+    "statTime": "가상 시간",
     "statActs": "동작",
     "availableActions": "가능한 동작",
     "totalEvents": "전체 이벤트",
@@ -386,7 +396,8 @@
     "showLess": "접기",
     "keyQuotes": "핵심 인용",
     "interviewSummary": "인터뷰 요약",
-    "logWarningWord": "경고"
+    "logWarningWord": "경고",
+    "downloadReport": "보고서 내려받기 (Markdown)"
   },
   "step5": {
     "interactiveTools": "상호작용 도구",
@@ -456,7 +467,8 @@
     "itemsCount": "{count}개",
     "entityTypes": "엔티티 유형",
     "showEdgeLabels": "엣지 라벨 표시",
-    "unnamed": "이름 없음"
+    "unnamed": "이름 없음",
+    "waitingFirstNodes": "그래프를 만드는 중이에요. 첫 엔티티가 들어오면 여기에 그려져요…"
   },
   "history": {
     "title": "시뮬레이션 기록",
@@ -574,12 +586,12 @@
     "simGraphOutdated": "이 시뮬레이션은 이전 그래프를 사용해요. 그래프 메모리를 켜기 전에 다시 준비해 주세요.",
     "graphReadByReport": "보고서가 이 그래프를 읽고 있어요. 보고서 생성이 끝난 뒤 그래프 메모리 업데이트를 켜 주세요.",
     "simAlreadyRunning": "시뮬레이션이 이미 실행 중이거나 마무리 중이에요: {id}",
-    "graphUpdaterInitFailed": "Zep 그래프 업데이터를 준비하지 못했어요: {error}",
-    "graphCleanupFailed": "Zep 그래프 쓰기를 정리하지 못했어요: {error}",
+    "graphUpdaterInitFailed": "그래프 메모리 업데이터를 준비하지 못했어요: {error}",
+    "graphCleanupFailed": "그래프 쓰기를 정리하지 못했어요: {error}",
     "processTerminateFailed": "하위 프로세스를 종료하지 못했어요: {error}",
     "logCloseFailed": "로그 파일을 닫지 못했어요: {error}",
     "processExitError": "프로세스가 코드 {code}로 종료됐어요. 오류: {error}",
-    "graphIngestionIncomplete": "Zep 그래프 반영이 끝까지 완료되지 않았어요: {error}",
+    "graphIngestionIncomplete": "그래프 반영이 끝까지 완료되지 않았어요: {error}",
     "simNotRunning": "시뮬레이션이 실행 중이 아니에요: {id}, status={status}",
     "simStopFailed": "시뮬레이션을 멈추지 못했어요",
     "simStopNotTerminal": "시뮬레이션을 멈춘 뒤 최종 상태에 이르지 못했어요: {id}, status={status}",
@@ -593,15 +605,16 @@
       "configError": "LLM 설정에 문제가 있어요: {error}",
       "oauthListenerFailed": "로그인 콜백을 받을 로컬 서버를 시작하지 못했어요. 127.0.0.1 포트를 쓸 수 있는지 확인해 주세요."
     },
-    "simulationDirectoryNotFound": "시뮬레이션 폴더를 찾을 수 없어요."
+    "simulationDirectoryNotFound": "시뮬레이션 폴더를 찾을 수 없어요.",
+    "prepareAlreadyRunning": "준비가 이미 진행 중이라 그 작업에 다시 연결했어요"
   },
   "progress": {
     "initGraphService": "그래프 구축 서비스를 준비하는 중…",
     "textChunking": "텍스트를 나누는 중…",
-    "creatingZepGraph": "Zep 그래프를 만드는 중…",
+    "creatingZepGraph": "그래프를 만드는 중…",
     "settingOntology": "온톨로지 정의를 설정하는 중…",
     "addingChunks": "텍스트 청크 {count}개를 추가하는 중…",
-    "waitingZepProcess": "Zep이 데이터를 처리하길 기다리는 중…",
+    "waitingZepProcess": "그래프가 데이터를 처리하길 기다리는 중…",
     "fetchingGraphData": "그래프 데이터를 가져오는 중…",
     "graphBuildComplete": "그래프 구축 완료",
     "buildFailed": "구축하지 못했어요: {error}",
@@ -615,12 +628,12 @@
     "noEpisodesWait": "기다릴 에피소드가 없어요",
     "waitingEpisodes": "텍스트 청크 {count}개 처리를 기다리는 중…",
     "episodesTimeout": "일부 청크가 시간 초과됐어요. {completed}/{total}개 완료",
-    "zepProcessing": "Zep 처리 중… {completed}/{total}개 완료, {pending}개 대기 ({elapsed}초)",
+    "zepProcessing": "그래프 만드는 중… {completed}/{total}개 완료, {pending}개 대기 ({elapsed}초)",
     "processingComplete": "처리 완료: {completed}/{total}",
     "taskComplete": "작업 완료",
     "taskFailed": "작업 실패",
     "startPreparingEnv": "시뮬레이션 환경을 준비하는 중…",
-    "connectingZepGraph": "Zep 그래프에 연결하는 중…",
+    "connectingZepGraph": "그래프에 연결하는 중…",
     "readingNodeData": "노드 데이터를 읽는 중…",
     "readingComplete": "완료, 엔티티 {count}개를 찾았어요",
     "startGenerating": "생성을 시작해요…",
@@ -700,7 +713,7 @@
     "detectedExistingPrep": "이미 준비된 결과가 있어 그대로 사용해요",
     "prepareTaskStarted": "준비 작업을 시작했어요",
     "prepareTaskId": "  └─ 작업 ID: {taskId}",
-    "zepEntitiesFound": "Zep 그래프에서 엔티티 {count}개를 찾았어요",
+    "zepEntitiesFound": "그래프에서 엔티티 {count}개를 찾았어요",
     "entityTypes": "  └─ 엔티티 유형: {types}",
     "startPollingProgress": "준비 진행 상황을 확인하는 중…",
     "prepareFailed": "준비하지 못했어요: {error}",
@@ -854,8 +867,8 @@
   },
   "console": {
     "zepToolsInitialized": "ZepToolsService 준비 완료",
-    "zepRetryAttempt": "Zep {operation} {attempt}번째 시도 실패: {error}, {delay}초 뒤 다시 시도해요…",
-    "zepAllRetriesFailed": "Zep {operation}이 {retries}번 시도 끝에 실패했어요: {error}",
+    "zepRetryAttempt": "그래프 {operation} {attempt}번째 시도 실패: {error}, {delay}초 뒤 다시 시도해요…",
+    "zepAllRetriesFailed": "그래프 {operation}이 {retries}번 시도 끝에 실패했어요: {error}",
     "graphSearch": "그래프 검색: graph_id={graphId}, query={query}…",
     "graphSearchOp": "그래프 검색 (graph={graphId})",
     "searchComplete": "검색 완료: 관련 사실 {count}개",
@@ -1072,5 +1085,59 @@
     "unsupported_format": "지원하지 않는 파일 형식이에요: {suffix}",
     "unprocessable_format": "처리할 수 없는 파일 형식이에요: {suffix}",
     "pymupdf_required": "PyMuPDF가 필요해요: pip install PyMuPDF"
+  },
+  "timer": {
+    "elapsed": "지난 시간 {time}",
+    "took": "걸린 시간 {time}",
+    "remaining": "약 {time} 남음",
+    "remainingLabel": "남은 시간",
+    "calculating": "남은 시간 계산 중…",
+    "lessThanMinute": "1분 안에 끝나요",
+    "hourMin": "{h}시간 {m}분",
+    "minSec": "{m}분 {s}초",
+    "minutes": "{m}분",
+    "sec": "{s}초",
+    "realTime": "실제 시간",
+    "ingesting": "라운드는 끝났고, 행동을 그래프 메모리에 반영하는 중이에요 (남은 {n}건)",
+    "finishing": "마무리하는 중…"
+  },
+  "estimate": {
+    "title": "시작 전 예상",
+    "time": "약 {minutes}분 (이 컴퓨터의 지난 실행 {runs}건 속도 기준)",
+    "timeUnknown": "첫 실행이라 시간 예상은 한 번 돌린 뒤부터 보여요",
+    "tokens": "AI 호출 약 {turns}번, 토큰 약 {tokens}개",
+    "turns": "{rounds}라운드 동안 에이전트 AI 호출 약 {turns}번 (사용량은 이 횟수에 비례해요)"
+  },
+  "guide": {
+    "progress": "전체 {current}/5단계 · {name}",
+    "chip": {
+      "working": "기다리는 중",
+      "action": "할 일",
+      "error": "문제 발생"
+    },
+    "error": "문제가 생겼어요. 아래 시스템 로그에서 원인을 확인한 뒤 다시 시도해 주세요.",
+    "s1": {
+      "working": "문서를 읽고 지식 그래프를 만들고 있어요. 기다리기만 하면 되고, 끝나면 다음 할 일을 여기서 알려 드려요.",
+      "action": "그래프가 준비됐어요. '{button}' 버튼을 눌러 다음 단계로 가세요."
+    },
+    "s2": {
+      "working": "그래프 속 인물마다 페르소나와 행동 설정을 만들고 있어요. 기다리기만 하면 돼요.",
+      "action": "준비가 끝났어요. 라운드 수와 예상 시간을 확인하고 '{button}'을 누르세요.",
+      "choose": "에이전트 인물 구성을 고른 뒤 '시작'을 누르세요."
+    },
+    "s3": {
+      "working": "에이전트들이 글을 쓰고 반응하는 중이에요. 끝나면 보고서 버튼이 켜져요.",
+      "action": "시뮬레이션이 끝났어요. '{button}'을 눌러 보고서를 만드세요.",
+      "ingesting": "라운드는 끝났어요. 마지막 행동을 그래프 메모리에 반영하는 중이고, 끝나면 보고서를 만들 수 있어요."
+    },
+    "s4": {
+      "working": "보고서 에이전트가 시뮬레이션 결과를 조사해 보고서를 쓰고 있어요.",
+      "action": "보고서가 완성됐어요. '{button}'으로 저장하거나, 심층 상호작용에서 이어서 질문해 보세요."
+    },
+    "s5": {
+      "working": "답변을 만들고 있어요…",
+      "action": "보고서 에이전트나 개별 에이전트에게 궁금한 점을 물어보세요."
+    },
+    "notifyDone": "MiroFish: 보고서가 완성됐어요"
   }
 }

@@ -24,6 +24,7 @@ from ..services.simulation_runner import (
 )
 from ..services.zep_graph_memory_updater import ZepGraphMemoryManager
 from ..services import persona_archetypes
+from ..llm.usage import usage_tracker
 from ..utils.logger import get_logger
 from ..utils.locale import t, get_locale, set_locale
 from ..utils.zep_lifecycle import get_graph_readers, graph_lifecycle_lock
@@ -486,6 +487,18 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
         return False, {"reason": t_detail('api.prepareStateReadFailed', error=e)}
 
 
+def _active_prepare_task_id(simulation_id: str):
+    from ..models.task import TaskManager, TaskStatus
+
+    for task in TaskManager().list_tasks(task_type="simulation_prepare"):
+        if (
+            (task.get("metadata") or {}).get("simulation_id") == simulation_id
+            and task.get("status") in (TaskStatus.PENDING.value, TaskStatus.PROCESSING.value)
+        ):
+            return task["task_id"]
+    return None
+
+
 @simulation_bp.route('/prepare', methods=['POST'])
 def prepare_simulation():
     """
@@ -574,6 +587,25 @@ def prepare_simulation():
                 })
             else:
                 logger.info(f"模拟 {simulation_id} 未准备完成，将启动准备任务")
+
+            # A page reload while profiles are still generating must attach to the
+            # running task instead of starting a second paid run on the same files.
+            running_task_id = _active_prepare_task_id(simulation_id)
+            if running_task_id:
+                logger.info(f"模拟 {simulation_id} 的准备任务仍在运行，返回现有任务: {running_task_id}")
+                return jsonify({
+                    "success": True,
+                    "data": {
+                        "simulation_id": simulation_id,
+                        "task_id": running_task_id,
+                        "status": "preparing",
+                        "message": t('api.prepareAlreadyRunning'),
+                        "already_prepared": False,
+                        "already_running": True,
+                        "expected_entities_count": state.entities_count,
+                        "entity_types": state.entity_types,
+                    }
+                })
         
         # 从项目获取必要信息
         project = ProjectManager.get_project(state.project_id)
@@ -1972,6 +2004,33 @@ def stop_simulation():
 
 # ============== 实时状态监控接口 ==============
 
+@simulation_bp.route('/<simulation_id>/estimate', methods=['GET'])
+def get_run_estimate(simulation_id: str):
+    """Pre-start time/token estimate. Query: max_rounds (optional)."""
+    try:
+        max_rounds = request.args.get('max_rounds', type=int)
+        agent_usage = [
+            entry for entry in usage_tracker.snapshot()["entries"]
+            if entry["stage"] == "simulation_agent"
+        ]
+        calls = sum(entry["calls"] for entry in agent_usage)
+        tokens = sum(entry["input_tokens"] + entry["output_tokens"] for entry in agent_usage)
+        estimate = SimulationRunner.estimate_run(
+            simulation_id,
+            max_rounds=max_rounds,
+            tokens_per_turn=(tokens / calls) if calls else None,
+        )
+        return jsonify({"success": True, "data": estimate})
+    except FileNotFoundError:
+        return jsonify({
+            "success": False,
+            "error": t('api.simulationNotFound', id=simulation_id),
+        }), 404
+    except Exception as e:
+        logger.error(f"Run estimate failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @simulation_bp.route('/<simulation_id>/run-status', methods=['GET'])
 def get_run_status(simulation_id: str):
     """
@@ -2018,6 +2077,15 @@ def get_run_status(simulation_id: str):
         
         result = run_state.to_dict()
         result["llm_models"] = _agent_llm_meta(simulation_id)[0]
+        result["rounds_finished"] = SimulationRunner.rounds_finished(run_state)
+        updater = ZepGraphMemoryManager.get_updater(simulation_id)
+        if updater is not None:
+            stats = updater.get_stats()
+            result["graph_ingest_pending"] = (
+                stats["queue_size"]
+                + sum(stats["buffer_sizes"].values())
+                + stats["episodes_left_to_process"]
+            )
         return jsonify({
             "success": True,
             "data": result

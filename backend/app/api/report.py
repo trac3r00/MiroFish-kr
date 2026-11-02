@@ -4,6 +4,7 @@ Report API路由
 """
 
 import os
+import re
 import traceback
 import threading
 from flask import request, jsonify, send_file
@@ -89,8 +90,13 @@ def generate_report():
             RunnerStatus.PAUSED,
             RunnerStatus.STOPPING,
         }
+        # Rounds done and graph memory drained: the process may still be up for
+        # interviews, which the report agent can use, so do not wait for exit.
+        rounds_done = SimulationRunner.rounds_finished(run_state)
         if updater is not None or (
-            run_state is not None and run_state.runner_status in active_statuses
+            run_state is not None
+            and run_state.runner_status in active_statuses
+            and not rounds_done
         ):
             return jsonify({
                 "success": False,
@@ -104,7 +110,7 @@ def generate_report():
             RunnerStatus.COMPLETED,
             RunnerStatus.STOPPED,
         }
-        if (
+        if not rounds_done and (
             run_state is None
             or run_state.runner_status not in successful_terminal_statuses
         ):
@@ -183,9 +189,13 @@ def generate_report():
                     "success": False,
                     "error": t('api.report.graphChangedWhileStarting'),
                 }), 409
+            refreshed_rounds_done = SimulationRunner.rounds_finished(
+                refreshed_run_state
+            )
             if refreshed_updater is not None or (
                 refreshed_run_state is not None
                 and refreshed_run_state.runner_status in active_statuses
+                and not refreshed_rounds_done
             ):
                 return jsonify({
                     "success": False,
@@ -195,7 +205,7 @@ def generate_report():
                     ),
                     "ingestion_pending": refreshed_updater is not None,
                 }), 409
-            if (
+            if not refreshed_rounds_done and (
                 refreshed_run_state is None
                 or refreshed_run_state.runner_status
                 not in successful_terminal_statuses
@@ -514,6 +524,15 @@ def list_reports():
         }), 500
 
 
+def _report_download_name(report) -> str:
+    """'<title>_<YYYY-MM-DD>.md'; falls back to the report id when untitled."""
+    title = (report.outline.title if report.outline else "") or report.report_id
+    safe = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", title)
+    safe = re.sub(r"\s+", "_", safe.strip())[:80].strip("._") or report.report_id
+    date = (report.completed_at or report.created_at or "")[:10]
+    return f"{safe}_{date}.md" if date else f"{safe}.md"
+
+
 @report_bp.route('/<report_id>/download', methods=['GET'])
 def download_report(report_id: str):
     """
@@ -531,6 +550,7 @@ def download_report(report_id: str):
             }), 404
         
         md_path = ReportManager._get_report_markdown_path(report_id)
+        download_name = _report_download_name(report)
         
         if not os.path.exists(md_path):
             # 如果MD文件不存在，生成一个临时文件
@@ -542,13 +562,13 @@ def download_report(report_id: str):
             return send_file(
                 temp_path,
                 as_attachment=True,
-                download_name=f"{report_id}.md"
+                download_name=download_name
             )
         
         return send_file(
             md_path,
             as_attachment=True,
-            download_name=f"{report_id}.md"
+            download_name=download_name
         )
         
     except Exception as e:

@@ -285,6 +285,7 @@ class ZepGraphMemoryUpdater:
         self._skipped_count = 0     # 被过滤跳过的活动数（DO_NOTHING）
         self._failed_batches: List[Dict[str, Any]] = []
         self._pending_episode_uuids: List[str] = []
+        self._episodes_left_to_process = 0
         
         logger.info(f"ZepGraphMemoryUpdater 初始化完成: graph_id={graph_id}, batch_size={self.BATCH_SIZE}")
     
@@ -604,6 +605,7 @@ class ZepGraphMemoryUpdater:
         if deadline is None:
             deadline = time.time() + ZEP_INGESTION_WAIT_TIMEOUT_SECONDS
         while pending:
+            self._episodes_left_to_process = len(pending)
             if time.time() >= deadline:
                 raise TimeoutError(
                     f"Zep simulation ingestion timed out with {len(pending)} "
@@ -618,6 +620,7 @@ class ZepGraphMemoryUpdater:
                     pending.remove(episode_uuid)
             if pending:
                 time.sleep(3)
+        self._episodes_left_to_process = 0
         self._pending_episode_uuids = []
     
     def get_stats(self) -> Dict[str, Any]:
@@ -635,6 +638,8 @@ class ZepGraphMemoryUpdater:
             "pending_episode_count": len(self._pending_episode_uuids),
             "skipped_count": self._skipped_count,        # 被过滤跳过的活动数（DO_NOTHING）
             "queue_size": self._activity_queue.qsize(),
+            # Only meaningful while draining: episodes sent but not yet processed.
+            "episodes_left_to_process": self._episodes_left_to_process,
             "buffer_sizes": buffer_sizes,                # 各平台缓冲区大小
             "running": self._running,
         }

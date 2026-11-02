@@ -763,7 +763,10 @@ def _build_graph_impl():
                     task_manager.update_task(
                         task_id,
                         message=msg,
-                        progress=progress
+                        progress=progress,
+                        # The percent jumps to 55 during setup; ingestion is the slow
+                        # part, so time-left estimates use this ratio instead.
+                        progress_detail={"stage": "ingest", "ratio": round(progress_ratio, 4)},
                     )
                 
                 builder._wait_for_batch(submission, wait_progress_callback)
