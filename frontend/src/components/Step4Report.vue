@@ -98,6 +98,16 @@
               <span class="metric-label">{{ $t('step4.metricElapsed') }}</span>
               <span class="metric-value mono">{{ formatElapsedTime }}</span>
             </div>
+            <div v-if="!isComplete && totalSections > 0" class="metric">
+              <span class="metric-label">{{ $t('timer.remainingLabel') }}</span>
+              <StageTimer
+                class="metric-value"
+                remaining-only
+                :started-at="startTime?.getTime()"
+                :done="completedSections"
+                :total="totalSections"
+              />
+            </div>
             <div class="metric">
               <span class="metric-label">{{ $t('step4.metricTools') }}</span>
               <span class="metric-value mono">{{ totalToolCalls }}</span>
@@ -128,6 +138,15 @@
               </div>
             </div>
           </div>
+
+          <a v-if="isComplete && reportId" class="download-report-btn" :href="getReportDownloadUrl(reportId)" download>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 3v12"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <path d="M5 21h14"></path>
+            </svg>
+            <span>{{ $t('step4.downloadReport') }}</span>
+          </a>
 
           <!-- Next Step Button - shown after completion -->
           <button v-if="isComplete" class="next-step-btn" @click="goToInteraction">
@@ -396,9 +415,11 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, h, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { getAgentLog, getConsoleLog } from '../api/report'
+import { getAgentLog, getConsoleLog, getReportDownloadUrl } from '../api/report'
 import { getLlmStatus } from '../api/llm'
 import ModelBadge from './ModelBadge.vue'
+import StageTimer from './StageTimer.vue'
+import { clearRunPlan, getRunPlan } from '../store/autoRun'
 import { availableLocales as localeRegistry, loadLocale } from '../i18n'
 
 const router = useRouter()
@@ -1970,6 +1991,7 @@ const fetchAgentLog = async () => {
             isComplete.value = true
             currentSectionIndex.value = null
             emit('update-status', 'completed')
+            notifyAutoRunDone()
             stopPolling()
           }
           
@@ -2094,6 +2116,15 @@ watch(() => props.reportId, (newId) => {
     startPolling()
   }
 }, { immediate: true })
+
+const notifyAutoRunDone = () => {
+  if (!getRunPlan(props.simulationId)?.auto) return
+  clearRunPlan(props.simulationId)
+  if ('Notification' in window && Notification.permission === 'granted') {
+    new Notification(t('guide.notifyDone'), { body: reportOutline.value?.title || '' })
+  }
+}
+
 </script>
 
 <style scoped>
@@ -3311,6 +3342,27 @@ watch(() => props.reportId, (newId) => {
 
 .next-step-btn:hover {
   background: #374151;
+}
+
+.download-report-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 12px 20px 0 20px;
+  padding: 12px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+  background: #fff;
+  border: 1px solid #D1D5DB;
+  border-radius: 8px;
+  text-decoration: none;
+  transition: background 0.2s ease;
+}
+
+.download-report-btn:hover {
+  background: #F3F4F6;
 }
 
 .next-step-btn svg {

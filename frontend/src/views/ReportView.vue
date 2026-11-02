@@ -35,6 +35,8 @@
       </div>
     </header>
 
+    <GuideBanner :step="4" :state="guideState" />
+
     <!-- Main Content Area -->
     <main class="content-area">
       <!-- Left Panel: Graph -->
@@ -64,6 +66,7 @@
 </template>
 
 <script setup>
+import GuideBanner from '../components/GuideBanner.vue'
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -214,6 +217,11 @@ watch(() => route.params.reportId, (newId) => {
 onMounted(() => {
   addLog(t('log.reportViewInit'))
   loadReportData()
+})
+
+const guideState = computed(() => {
+  if (statusClass.value === 'error') return 'error'
+  return statusClass.value === 'processing' ? 'working' : 'action'
 })
 </script>
 

@@ -83,6 +83,16 @@ export const getSimulationConfigRealtime = (simulationId) => {
  * 列出所有模拟
  * @param {string} projectId - 可选，按项目ID过滤
  */
+/**
+ * Pre-start estimate: { rounds, estimated_seconds, history_runs, agent_turns, estimated_tokens }
+ * @param {string} simulationId
+ * @param {number} [maxRounds]
+ */
+export const getRunEstimate = (simulationId, maxRounds) => {
+  const params = maxRounds ? { max_rounds: maxRounds } : {}
+  return service.get(`/api/simulation/${simulationId}/estimate`, { params })
+}
+
 export const listSimulations = (projectId) => {
   const params = projectId ? { project_id: projectId } : {}
   return service.get('/api/simulation/list', { params })

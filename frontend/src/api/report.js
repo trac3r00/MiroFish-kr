@@ -43,6 +43,14 @@ export const getReport = (reportId) => {
 }
 
 /**
+ * Markdown download URL (served as an attachment named after the report title)
+ * @param {string} reportId
+ */
+export const getReportDownloadUrl = (reportId) => {
+  return `${service.defaults.baseURL || ''}/api/report/${encodeURIComponent(reportId)}/download`
+}
+
+/**
  * 与 Report Agent 对话
  * @param {Object} data - { simulation_id, message, chat_history? }
  */

@@ -189,6 +189,29 @@
               </div>
             </div>
 
+            <div class="console-section run-mode-section">
+              <div class="run-mode-options" role="radiogroup" :aria-label="$t('home.runMode.label')">
+                <button
+                  v-for="mode in ['quick', 'full']"
+                  :key="mode"
+                  type="button"
+                  role="radio"
+                  class="run-mode-option"
+                  :class="{ selected: runMode === mode }"
+                  :aria-checked="runMode === mode"
+                  :disabled="loading"
+                  @click="runMode = mode"
+                >
+                  <span class="run-mode-title">{{ $t(`home.runMode.${mode}`) }}</span>
+                  <span class="run-mode-desc">{{ $t(`home.runMode.${mode}Desc`) }}</span>
+                </button>
+              </div>
+              <label class="auto-run-toggle">
+                <input v-model="autoRun" type="checkbox" :disabled="loading" />
+                <span>{{ $t('home.runMode.auto') }}</span>
+              </label>
+            </div>
+
             <!-- 启动按钮 -->
             <div class="console-section btn-section">
               <button 
@@ -295,12 +318,18 @@ const scrollToBottom = () => {
 }
 
 // 开始模拟 - 立即跳转，API调用在Process页面进行
+const runMode = ref('quick')
+const autoRun = ref(true)
+
 const startSimulation = () => {
   if (!canSubmit.value || loading.value) return
   
   // 存储待上传的数据
   import('../store/pendingUpload.js').then(({ setPendingUpload }) => {
-    setPendingUpload(files.value, formData.value.simulationRequirement)
+    setPendingUpload(files.value, formData.value.simulationRequirement, { mode: runMode.value, auto: autoRun.value })
+    if (autoRun.value && 'Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {})
+    }
     
     // 立即跳转到Process页面（使用特殊标识表示新建项目）
     router.push({
@@ -958,5 +987,53 @@ html[lang="en"] .workflow-list .step-desc {
 
 html[lang="en"] .workflow-list {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.console-section.run-mode-section {
+  padding-top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.run-mode-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.run-mode-option {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  text-align: left;
+  background: #FFF;
+  border: 1px solid #DDD;
+  cursor: pointer;
+  font-family: inherit;
+}
+.run-mode-option.selected {
+  border-color: #FF4500;
+  box-shadow: inset 0 0 0 1px #FF4500;
+}
+.run-mode-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #000;
+}
+.run-mode-desc {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #666;
+}
+.auto-run-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #333;
+  cursor: pointer;
+}
+@media (max-width: 760px) {
+  .run-mode-options { grid-template-columns: 1fr; }
 }
 </style>

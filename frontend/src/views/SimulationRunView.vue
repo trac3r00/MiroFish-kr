@@ -35,6 +35,8 @@
       </div>
     </header>
 
+    <GuideBanner :step="3" :state="guideState" />
+
     <!-- Main Content Area -->
     <main class="content-area">
       <!-- Left Panel: Graph -->
@@ -62,6 +64,7 @@
           @next-step="handleNextStep"
           @add-log="addLog"
           @update-status="updateStatus"
+          @ingest-change="ingesting = $event"
         />
       </div>
     </main>
@@ -69,6 +72,7 @@
 </template>
 
 <script setup>
+import GuideBanner from '../components/GuideBanner.vue'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
@@ -122,7 +126,7 @@ const statusClass = computed(() => {
 const statusText = computed(() => {
   if (currentStatus.value === 'error') return t('common.statusError')
   if (currentStatus.value === 'completed') return t('common.statusCompleted')
-  return 'Running'
+  return t('common.statusRunning')
 })
 
 const isSimulating = computed(() => currentStatus.value === 'processing')
@@ -312,6 +316,13 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopGraphRefresh()
+})
+
+const ingesting = ref(false)
+const guideState = computed(() => {
+  if (statusClass.value === 'error') return 'error'
+  if (ingesting.value) return 'ingesting'
+  return statusClass.value === 'processing' ? 'working' : 'action'
 })
 </script>
 

@@ -35,6 +35,8 @@
       </div>
     </header>
 
+    <GuideBanner :step="2" :state="guideState" />
+
     <!-- Main Content Area -->
     <main class="content-area">
       <!-- Left Panel: Graph -->
@@ -66,6 +68,7 @@
 </template>
 
 <script setup>
+import GuideBanner from '../components/GuideBanner.vue'
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
@@ -116,6 +119,7 @@ const statusClass = computed(() => {
 const statusText = computed(() => {
   if (currentStatus.value === 'error') return t('common.statusError')
   if (currentStatus.value === 'completed') return t('common.statusReady')
+  if (currentStatus.value === 'awaiting') return t('guide.chip.action')
   return t('common.statusPreparing')
 })
 
@@ -299,6 +303,12 @@ onMounted(async () => {
   
   // 加载模拟数据
   loadSimulationData()
+})
+
+const guideState = computed(() => {
+  if (statusClass.value === 'error') return 'error'
+  if (currentStatus.value === 'awaiting') return 'choose'
+  return statusClass.value === 'processing' ? 'working' : 'action'
 })
 </script>
 

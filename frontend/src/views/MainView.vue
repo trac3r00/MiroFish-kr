@@ -35,6 +35,8 @@
       </div>
     </header>
 
+    <GuideBanner :step="currentStep" :state="guideState" />
+
     <!-- Main Content Area -->
     <main class="content-area">
       <!-- Left Panel: Graph -->
@@ -77,6 +79,7 @@
 </template>
 
 <script setup>
+import GuideBanner from '../components/GuideBanner.vue'
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -85,6 +88,7 @@ import Step1GraphBuild from '../components/Step1GraphBuild.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
 import { generateOntology, getProject, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
+import { setRunPlan } from '../store/autoRun'
 import LanguageSwitcher from '../components/LanguageSwitcher.vue'
 
 const route = useRoute()
@@ -222,6 +226,7 @@ const handleNewProject = async () => {
     if (res.success) {
       clearPendingUpload()
       currentProjectId.value = res.data.project_id
+      setRunPlan(res.data.project_id, pending.runPlan)
       projectData.value = res.data
       
       router.replace({ name: 'Process', params: { projectId: res.data.project_id } })
@@ -322,7 +327,10 @@ const startGraphPolling = () => {
 
 // getGraphData sends If-None-Match for a graph it already holds; a 304 comes
 // back as notModified with the held payload, so nothing is logged or redrawn.
+let graphFetchInFlight = false
 const fetchGraphData = async () => {
+  if (graphFetchInFlight) return
+  graphFetchInFlight = true
   try {
     // Refresh project info to check for graph_id
     const projRes = await getProject(currentProjectId.value)
@@ -337,6 +345,8 @@ const fetchGraphData = async () => {
     }
   } catch (err) {
     console.warn('Graph fetch error:', err)
+  } finally {
+    graphFetchInFlight = false
   }
 }
 
@@ -356,7 +366,10 @@ const pollTaskStatus = async (taskId) => {
         addLog(task.message)
       }
       
-      buildProgress.value = { progress: task.progress || 0, message: task.message }
+      // Redraw as soon as the build reports progress instead of waiting for the 10 s graph poll
+      // (an unchanged graph comes back as 304 and is not redrawn).
+      if (graphPollTimer && task.progress !== buildProgress.value?.progress) fetchGraphData()
+      buildProgress.value = { progress: task.progress || 0, message: task.message, startedAt: task.created_at, ingestRatio: task.progress_detail?.ratio ?? null }
       
       if (task.status === 'completed') {
         addLog(t('log.graphBuildCompleted'))
@@ -428,6 +441,11 @@ onMounted(() => {
 onUnmounted(() => {
   stopPolling()
   stopGraphPolling()
+})
+
+const guideState = computed(() => {
+  if (statusClass.value === 'error') return 'error'
+  return statusClass.value === 'processing' ? 'working' : 'action'
 })
 </script>
 

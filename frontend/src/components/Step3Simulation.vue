@@ -1,5 +1,16 @@
 <template>
   <div class="simulation-panel">
+    <div v-if="runStatus.started_at" class="run-timer-bar">
+      <span class="run-timer-label">{{ $t('timer.realTime') }}</span>
+      <StageTimer
+        :started-at="runStatus.started_at"
+        :done="runStatus.current_round || 0"
+        :total="ingestingAfterRounds ? 0 : (runStatus.total_rounds || maxRounds || 0)"
+        :finished="phase === 2"
+        :finished-at="runStatus.updated_at"
+      />
+      <span v-if="ingestingAfterRounds" class="run-ingest-note">{{ $t('timer.ingesting', { n: runStatus.graph_ingest_pending ?? '-' }) }}</span>
+    </div>
     <!-- Top Control Bar -->
     <div class="control-bar">
       <div class="status-group">
@@ -305,6 +316,8 @@ import {
 } from '../api/simulation'
 import { generateReport } from '../api/report'
 import ModelBadge from './ModelBadge.vue'
+import StageTimer from './StageTimer.vue'
+import { claimAutoStep } from '../store/autoRun'
 
 const { t, locale } = useI18n()
 
@@ -320,7 +333,7 @@ const props = defineProps({
   systemLogs: Array
 })
 
-const emit = defineEmits(['go-back', 'next-step', 'add-log', 'update-status'])
+const emit = defineEmits(['go-back', 'next-step', 'add-log', 'update-status', 'ingest-change'])
 
 const router = useRouter()
 
@@ -337,6 +350,14 @@ const isStarting = ref(false)
 const isStopping = ref(false)
 const startError = ref(null)
 const runStatus = ref({})
+// Rounds are over but the graph memory is still absorbing the last actions; the report
+// unlocks when this ends, so show it instead of a misleading 'almost done'.
+const ingestingAfterRounds = computed(() => {
+  const s = runStatus.value
+  return phase.value === 1 && s.total_rounds > 0 && s.current_round >= s.total_rounds &&
+    !s.rounds_finished && ['running', 'stopping'].includes(s.runner_status)
+})
+watch(ingestingAfterRounds, (value) => emit('ingest-change', value))
 const allActions = ref([]) // rendered window: at most MAX_RENDERED_ACTIONS, ascending cursor
 const seenCounts = ref({ total: 0, twitter: 0, reddit: 0 }) // every action received, including dropped ones
 const droppedActionsCount = ref(0)
@@ -551,6 +572,7 @@ const finishRun = (status) => {
   statusPoller.stop()
   detailPoller.poke()
   emit('update-status', status)
+  if (status === 'completed' && claimAutoStep(props.simulationId, 'report')) handleNextStep()
 }
 
 // 追踪各平台的上一次轮次，用于检测变化并输出日志
@@ -580,7 +602,9 @@ const fetchRunStatus = async () => {
       }
       
       // 检测模拟是否已完成（通过 runner_status 或平台完成状态判断）
-      const isCompleted = data.runner_status === 'completed' || data.runner_status === 'stopped'
+      // rounds_finished: every round is done and graph memory is drained; the
+      // environment stays open for interviews, so a report can start now.
+      const isCompleted = data.runner_status === 'completed' || data.runner_status === 'stopped' || data.rounds_finished === true
       const isFailed = data.runner_status === 'failed'
       
       // runner_status is authoritative because the backend only publishes a
@@ -789,8 +813,11 @@ const hasExistingRun = async () => {
   try {
     const res = await getRunStatus(props.simulationId)
     const data = res?.data || {}
-    return res?.success && (data.current_round || 0) > 0 &&
-      ['running', 'completed', 'stopped', 'failed'].includes(data.runner_status)
+    if (!res?.success) return false
+    // A run that was just started is still at round 0; restarting it here (force: true)
+    // would kill it and silently start over with the default round count.
+    if (['starting', 'running', 'paused', 'stopping'].includes(data.runner_status)) return true
+    return (data.current_round || 0) > 0 && ['completed', 'stopped', 'failed'].includes(data.runner_status)
   } catch {
     return false
   }
@@ -1430,5 +1457,26 @@ onUnmounted(() => {
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
   margin-right: 6px;
+}
+
+.run-timer-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid #EAEAEA;
+  background: #FAFAFA;
+}
+.run-timer-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6B7280;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.run-ingest-note {
+  font-size: 12px;
+  color: #B45309;
 }
 </style>

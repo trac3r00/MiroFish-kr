@@ -120,6 +120,13 @@
         </div>
 
         <div class="card-content">
+          <StageTimer
+            v-if="currentPhase === 1 && buildProgress"
+            class="step-timer"
+            :started-at="buildProgress.startedAt"
+            :done="Math.round((buildProgress.ingestRatio ?? 0) * 1000)"
+            :total="buildProgress.ingestRatio == null ? 0 : 1000"
+          />
           <p class="api-note">POST /api/graph/build</p>
           <p class="description">
             {{ $t('step1.graphRagDesc') }}
@@ -190,7 +197,9 @@
 import { computed, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { createSimulation } from '../api/simulation'
+import { createSimulation, listSimulations } from '../api/simulation'
+import StageTimer from './StageTimer.vue'
+import { claimAutoStep, getRunPlan, setRunPlan } from '../store/autoRun'
 
 const router = useRouter()
 const { t, locale } = useI18n()
@@ -210,6 +219,19 @@ const selectedOntologyItem = ref(null)
 const logContent = ref(null)
 const creatingSimulation = ref(false)
 
+const findReusableSimulation = async () => {
+  try {
+    const res = await listSimulations(props.projectData.project_id)
+    const candidates = (res.data || []).filter(s =>
+      s.status !== 'failed' && s.graph_id === props.projectData.graph_id
+    )
+    return candidates.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0] || null
+  } catch (err) {
+    console.warn('listSimulations failed:', err)
+    return null
+  }
+}
+
 // 进入环境搭建 - 创建 simulation 并跳转
 const handleEnterEnvSetup = async () => {
   if (!props.projectData?.project_id || !props.projectData?.graph_id) {
@@ -220,6 +242,19 @@ const handleEnterEnvSetup = async () => {
   creatingSimulation.value = true
   
   try {
+    // Re-entering this page must not silently start a second, paid run on the same graph.
+    const existing = await findReusableSimulation()
+    if (existing && window.confirm(t('step1.existingSimulationPrompt', {
+      time: new Date(existing.created_at).toLocaleString(locale.value)
+    }))) {
+      const runStarted = ['running', 'paused', 'stopping', 'stopped', 'completed'].includes(existing.status)
+      router.push({
+        name: runStarted ? 'SimulationRun' : 'Simulation',
+        params: { simulationId: existing.simulation_id }
+      })
+      return
+    }
+
     const res = await createSimulation({
       project_id: props.projectData.project_id,
       graph_id: props.projectData.graph_id,
@@ -228,6 +263,8 @@ const handleEnterEnvSetup = async () => {
     })
     
     if (res.success && res.data?.simulation_id) {
+      const plan = getRunPlan(props.projectData.project_id)
+      if (plan) setRunPlan(res.data.simulation_id, { mode: plan.mode, auto: plan.auto })
       // 跳转到 simulation 页面
       router.push({
         name: 'Simulation',
@@ -244,6 +281,14 @@ const handleEnterEnvSetup = async () => {
     creatingSimulation.value = false
   }
 }
+
+watch(
+  () => props.currentPhase >= 2 && props.projectData?.graph_id,
+  (ready) => {
+    if (ready && claimAutoStep(props.projectData.project_id, 'envSetup')) handleEnterEnvSetup()
+  },
+  { immediate: true }
+)
 
 const selectOntologyItem = (item, type) => {
   selectedOntologyItem.value = { ...item, itemType: type }
@@ -696,5 +741,9 @@ watch(() => props.systemLogs.length, () => {
 .log-msg {
   color: #CCC;
   word-break: break-all;
+}
+
+.step-timer {
+  margin-bottom: 10px;
 }
 </style>

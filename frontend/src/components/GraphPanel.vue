@@ -209,7 +209,7 @@
       <!-- 等待/空状态 -->
       <div v-else class="graph-state">
         <div class="empty-icon">❖</div>
-        <p class="empty-text">{{ $t('graph.waitingOntology') }}</p>
+        <p class="empty-text">{{ currentPhase >= 1 ? $t('graph.waitingFirstNodes') : $t('graph.waitingOntology') }}</p>
       </div>
     </div>
 
