@@ -354,8 +354,8 @@ const runStatus = ref({})
 // unlocks when this ends, so show it instead of a misleading 'almost done'.
 const ingestingAfterRounds = computed(() => {
   const s = runStatus.value
-  return phase.value === 1 && s.total_rounds > 0 && s.current_round >= s.total_rounds &&
-    !s.rounds_finished && ['running', 'stopping'].includes(s.runner_status)
+  return phase.value === 1 && s.graph_ingest_pending != null && s.total_rounds > 0 &&
+    s.current_round >= s.total_rounds && !s.rounds_finished && ['running', 'stopping'].includes(s.runner_status)
 })
 watch(ingestingAfterRounds, (value) => emit('ingest-change', value))
 const allActions = ref([]) // rendered window: at most MAX_RENDERED_ACTIONS, ascending cursor

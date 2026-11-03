@@ -12,9 +12,10 @@ export const estimateRemainingMs = (samples, total, startedAtMs, nowMs) => {
   if (last.done <= 0) return null
 
   const first = samples.find(s => s.done > 0) || last
-  if (last.t - first.t < MIN_OBSERVED_MS && samples.filter(s => s.done > 0).length < 3) return null
+  if (nowMs - first.t < MIN_OBSERVED_MS && samples.filter(s => s.done > 0).length < 3) return null
 
-  const recent = samples.filter(s => nowMs - s.t <= WINDOW_MS && s.done < last.done)
+  // Measure from the first real progress: a jump from 0 at the start would inflate the rate.
+  const recent = samples.filter(s => s.done > 0 && nowMs - s.t <= WINDOW_MS && s.done < last.done)
   const base = recent.length ? recent[0] : null
   let rate = null
   if (base && last.t > base.t) {
