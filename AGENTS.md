@@ -85,6 +85,7 @@ npm run backend              # cd backend && uv run python run.py
 npm run frontend             # Vite dev server; /api proxied to :5001
 npm run build                # frontend production build
 cd backend && uv run pytest  # backend tests; no live services needed
+cd backend && uv run mirofish --help   # CLI over the running API (also `npm run cli -- <cmd>`); --json for scripts
 GITHUB_TOKEN= GH_TOKEN= python3 -m unittest tests.test_local_star_history tests.test_local_star_count_fetch -v
 docker compose up            # ghcr.io/666ghj/mirofish:latest, env_file .env, mounts ./backend/uploads
 ```

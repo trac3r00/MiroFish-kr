@@ -10,6 +10,7 @@ backend/
 ├── app/__init__.py   # create_app(): CORS /api/*, opt-in request-body logging, 4 blueprints
 ├── app/config.py     # Config: loads ROOT ../../.env with override=True
 ├── app/llm/          # LLM seam: profiles, router, client, usage, ChatGPT OAuth, Responses adapter
+├── app/cli/          # `mirofish` CLI (stdlib only): HTTP client over the same API as the UI; run/watch/list/show/report/chat
 ├── app/data/archetypes/  # persona archetype catalogs {ko,en,zh}.json
 ├── app/api/          # Flask blueprints (own AGENTS.md)
 ├── app/services/     # domain workflows (own AGENTS.md)

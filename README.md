@@ -107,6 +107,38 @@ npm run dev   # 백엔드(:5001) + 프런트(:3000)를 함께 실행
 
 브라우저에서 `http://localhost:3000`을 열어요. 처음이라면 홈에서 **빠른 시험**을 고르고 **보고서까지 알아서 진행**을 켠 채 시작해 보세요. 10라운드 기준 20~30분이면 보고서까지 끝나고, 그동안 화면 위 안내 띠가 지금 무엇을 하는 중인지 알려 줘요. 오른쪽 위 **AI** 버튼에서 지금 연결된 모델, 단계별 모델, 토큰 사용량(캐시 적중 포함)을 볼 수 있어요.
 
+### 5. 터미널에서 쓰기 (CLI)
+
+웹 화면 없이 터미널에서도 실행하고, 지켜보고, 정보를 확인할 수 있어요. CLI는 화면과 같은 API를 쓰기 때문에 화면에서 시작한 실행을 CLI로 보거나, 그 반대도 돼요.
+
+```bash
+cd backend
+uv run mirofish serve                      # 백엔드만 실행 (npm run dev 대신)
+uv run mirofish status                     # 서버·그래프 백엔드·AI 모델 연결 상태
+
+# 문서를 올려서 보고서까지 한 번에 (기본은 빠른 시험 10라운드)
+uv run mirofish run 자료.md -p "발표 후 2주 동안 여론이 어떻게 움직일지 예측해 줘" -o reports/
+uv run mirofish run 자료.md -p "..." --full          # 자동으로 정한 라운드 수 그대로
+uv run mirofish run 자료.md -p "..." --rounds 48     # 라운드 수 지정
+
+uv run mirofish watch sim_xxxx             # 진행 상황 실시간 보기 (proj_/sim_/report_ 모두 가능)
+uv run mirofish list sims                  # projects / sims / reports
+uv run mirofish show report_xxxx           # 자세히 보기
+uv run mirofish estimate sim_xxxx --rounds 48   # 시작 전 시간·AI 호출 예상
+uv run mirofish start sim_xxxx --rounds 10 -f   # 준비된 시뮬레이션 시작하고 따라 보기
+uv run mirofish stop sim_xxxx
+uv run mirofish report generate sim_xxxx   # 보고서 만들기
+uv run mirofish report download report_xxxx -o reports/
+uv run mirofish chat sim_xxxx "고령층 반응을 요약해 줘"   # 보고서 에이전트에게 질문
+uv run mirofish usage                      # 단계·모델별 토큰 사용량
+```
+
+- 루트에서는 `npm run cli -- status`처럼 써도 돼요.
+- `--json`을 붙이면 결과를 JSON으로 출력해서 스크립트에서 쓰기 좋아요.
+- `--lang ko|en|zh`로 출력 언어를 고를 수 있어요. 지정하지 않으면 `MIROFISH_LANG`, `LANG` 순서로 정해요.
+- 서버 주소가 다르면 `--api http://서버:5001` 또는 `MIROFISH_API`를 써요.
+- `run`이나 `watch` 중에 Ctrl+C를 눌러도 작업은 서버에서 계속 돌아요. 나중에 `mirofish watch <ID>`로 다시 보면 돼요.
+
 ## 한국형 인물 유형 (페르소나 변수)
 
 환경 설정 단계에서 **인물 유형 구성**을 고르면 에이전트에게 행동 특성이 섞여 들어가요. 같은 사건이라도 누가 어떻게 반응하고, 정보가 어디서 막히고 어디서 퍼지는지가 달라져요.
