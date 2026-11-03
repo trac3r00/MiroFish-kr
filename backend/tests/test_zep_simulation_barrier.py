@@ -160,7 +160,7 @@ def test_stop_api_keeps_pending_finalization_out_of_failed_state(monkeypatch):
         simulation_api.SimulationRunner,
         "stop_simulation",
         classmethod(
-            lambda _cls, _simulation_id: (_ for _ in ()).throw(
+            lambda _cls, _simulation_id, **_kwargs: (_ for _ in ()).throw(
                 SimulationStopPending("still draining")
             )
         ),
@@ -239,7 +239,7 @@ def test_force_restart_does_not_continue_while_old_ingestion_is_pending(monkeypa
         simulation_api.SimulationRunner,
         "stop_simulation",
         classmethod(
-            lambda _cls, _simulation_id: (_ for _ in ()).throw(
+            lambda _cls, _simulation_id, **_kwargs: (_ for _ in ()).throw(
                 SimulationStopPending("still draining")
             )
         ),

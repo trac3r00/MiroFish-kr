@@ -35,6 +35,10 @@ def main():
     
     # 创建应用
     app = create_app()
+
+    # Runs left active by a previous server process can never finish; free them.
+    from app.services.simulation_runner import SimulationRunner
+    SimulationRunner.recover_interrupted_runs()
     
     # 获取运行配置
     host = os.environ.get('FLASK_HOST', '0.0.0.0')

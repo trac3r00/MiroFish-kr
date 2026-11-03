@@ -1956,7 +1956,9 @@ def stop_simulation():
                 "error": t('api.requireSimulationId')
             }), 400
         
-        run_state = SimulationRunner.stop_simulation(simulation_id)
+        run_state = SimulationRunner.stop_simulation(
+            simulation_id, wait_seconds=SimulationRunner.STOP_WAIT_SECONDS
+        )
         
         # 更新模拟状态
         manager = SimulationManager()

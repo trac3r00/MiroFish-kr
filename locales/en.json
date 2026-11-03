@@ -606,7 +606,8 @@
       "oauthListenerFailed": "Could not start the local sign-in callback listener. Check that a 127.0.0.1 port is available."
     },
     "simulationDirectoryNotFound": "Simulation directory not found.",
-    "prepareAlreadyRunning": "Setup is already running; reconnected to it"
+    "prepareAlreadyRunning": "Setup is already running; reconnected to it",
+    "runInterruptedByRestart": "The simulation process ended while the server restarted, so the run was marked stopped. You can start it again."
   },
   "progress": {
     "initGraphService": "Initializing graph build service...",
@@ -1139,5 +1140,123 @@
       "action": "Ask the report agent or any single agent a question."
     },
     "notifyDone": "MiroFish: your report is ready"
+  },
+  "cli": {
+    "col": {
+      "agents": "Agents",
+      "cached": "Cached",
+      "calls": "Calls",
+      "created": "Created",
+      "id": "ID",
+      "input": "Input",
+      "kind": "Kind",
+      "label": "Label",
+      "model": "Model",
+      "name": "Name",
+      "output": "Output",
+      "profile": "Profile",
+      "project": "Project",
+      "simulation": "Simulation",
+      "stage": "Stage",
+      "status": "Status",
+      "title": "Title"
+    },
+    "error": {
+      "missingFiles": "File not found: {files}",
+      "prefix": "Error: {error}",
+      "stageFailed": "The {stage} stage failed: {error}",
+      "unknownId": "Unknown ID: {id} (expected proj_, sim_ or report_)"
+    },
+    "estimate": {
+      "header": "{rounds} rounds · {agents} agents",
+      "time": "About {time} (based on {runs} past runs on this machine)"
+    },
+    "help": {
+      "api": "Backend URL (default http://127.0.0.1:5001 or MIROFISH_API)",
+      "chat": "Ask the report agent a question",
+      "description": "Run, monitor and inspect MiroFish from the terminal",
+      "estimate": "Estimate time and AI calls before starting",
+      "follow": "Keep showing progress after starting",
+      "force": "Run again even if a result already exists",
+      "full": "Use the generated round count (full scale)",
+      "interval": "Seconds between status checks",
+      "json": "Print JSON (for scripts)",
+      "lang": "Output language",
+      "list": "List projects, simulations or reports",
+      "noGraphMemory": "Do not write actions into graph memory during the run (faster, thinner report evidence)",
+      "out": "Where to save the report (folder or file)",
+      "persona": "Persona preset (ko_everyday, en_everyday, zh_everyday, mixed_global, off)",
+      "prompt": "What you want to predict, in one sentence",
+      "quick": "Quick test: {rounds} rounds (default)",
+      "report": "Generate or download a report",
+      "reportId": "Simulation ID for generate, report ID for download",
+      "rounds": "Set the number of rounds",
+      "run": "Go from documents to a report in one command",
+      "serve": "Start the backend server",
+      "show": "Show a project, simulation or report",
+      "start": "Start (or restart) a prepared simulation",
+      "status": "Server, graph backend and AI model connections",
+      "stop": "Stop a simulation",
+      "usage": "Token usage by stage and model",
+      "watch": "Watch a project, simulation or report live"
+    },
+    "progress": {
+      "left": "about {time} left"
+    },
+    "report": {
+      "done": "Report ready: {id}",
+      "saved": "Saved the report: {path} ({size} bytes)",
+      "started": "Writing the report: {id}"
+    },
+    "run": {
+      "done": "All done.",
+      "graphDone": "Graph ready: {graph}",
+      "interrupted": "Stopped watching. The job keeps running on the server; see it again with `mirofish watch {target}`.",
+      "ontology": "Analyzing {files} file(s) and building the ontology...",
+      "prepared": "Personas and settings ready (preset {preset}, seed {seed})",
+      "project": "Project: {id}",
+      "roundsDone": "Simulation done: {round}/{total} rounds",
+      "simulation": "Simulation: {id}"
+    },
+    "show": {
+      "files": "Files: {files}",
+      "graph": "Graph: {graph}",
+      "ingest": "Waiting to write into graph memory: {n}",
+      "models": "Models: {models}",
+      "project": "Project {id} · {status} · {name}",
+      "report": "Report {id} · {status}",
+      "reportSim": "Simulation: {sim}",
+      "reportTitle": "Report {id} · {status}\n{title}",
+      "requirement": "Prediction request: {text}",
+      "run": "Run {runner} · round {round}/{total} · {actions} actions",
+      "simulation": "Simulation {id} · {status} · project {project}"
+    },
+    "stage": {
+      "graph": "Building graph {pct}%",
+      "ingest": "Rounds done, writing graph memory ({n} left)",
+      "prepare": "Preparing: {stage} {pct}%",
+      "report": "Writing report {done}/{total} sections",
+      "run": "Simulating {round}/{total} rounds · {actions} actions"
+    },
+    "start": {
+      "started": "Started the simulation: {id}"
+    },
+    "status": {
+      "graph": "Graph backend: {kind} (embeddings {embeddings})",
+      "pool": "Agent model mix: {pool}",
+      "profiles": "AI profiles:",
+      "routes": "Stage routes: {routes}",
+      "server": "Server: {url} (connected)"
+    },
+    "stop": {
+      "done": "Stopped the simulation: {id}",
+      "pending": "Stopping; graph writes are still finishing. Check later with `mirofish show`."
+    },
+    "usage": {
+      "totals": "Total: {calls} calls · input {input} · cached {cached} · output {output}"
+    },
+    "watch": {
+      "stopped": "Stopped watching. The job keeps running on the server."
+    }
   }
 }

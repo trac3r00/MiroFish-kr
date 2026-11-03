@@ -606,7 +606,8 @@
       "oauthListenerFailed": "로그인 콜백을 받을 로컬 서버를 시작하지 못했어요. 127.0.0.1 포트를 쓸 수 있는지 확인해 주세요."
     },
     "simulationDirectoryNotFound": "시뮬레이션 폴더를 찾을 수 없어요.",
-    "prepareAlreadyRunning": "준비가 이미 진행 중이라 그 작업에 다시 연결했어요"
+    "prepareAlreadyRunning": "준비가 이미 진행 중이라 그 작업에 다시 연결했어요",
+    "runInterruptedByRestart": "서버가 다시 시작되는 동안 시뮬레이션 프로세스가 끝나서 중지됨으로 표시했어요. 다시 시작할 수 있어요."
   },
   "progress": {
     "initGraphService": "그래프 구축 서비스를 준비하는 중…",
@@ -1139,5 +1140,123 @@
       "action": "보고서 에이전트나 개별 에이전트에게 궁금한 점을 물어보세요."
     },
     "notifyDone": "MiroFish: 보고서가 완성됐어요"
+  },
+  "cli": {
+    "col": {
+      "agents": "에이전트",
+      "cached": "캐시",
+      "calls": "호출",
+      "created": "만든 시각",
+      "id": "ID",
+      "input": "입력",
+      "kind": "종류",
+      "label": "이름",
+      "model": "모델",
+      "name": "이름",
+      "output": "출력",
+      "profile": "프로필",
+      "project": "프로젝트",
+      "simulation": "시뮬레이션",
+      "stage": "단계",
+      "status": "상태",
+      "title": "제목"
+    },
+    "error": {
+      "missingFiles": "파일을 찾을 수 없어요: {files}",
+      "prefix": "오류: {error}",
+      "stageFailed": "{stage} 단계가 실패했어요: {error}",
+      "unknownId": "알 수 없는 ID예요: {id} (proj_, sim_, report_로 시작해야 해요)"
+    },
+    "estimate": {
+      "header": "{rounds}라운드 · 에이전트 {agents}명",
+      "time": "약 {time} (이 컴퓨터의 지난 실행 {runs}건 기준)"
+    },
+    "help": {
+      "api": "백엔드 주소 (기본 http://127.0.0.1:5001, 또는 MIROFISH_API)",
+      "chat": "보고서 에이전트에게 질문하기",
+      "description": "터미널에서 MiroFish를 실행하고, 지켜보고, 정보를 확인해요",
+      "estimate": "시작 전에 시간과 AI 호출 수 예상하기",
+      "follow": "시작한 뒤 진행 상황을 계속 보여 주기",
+      "force": "결과가 이미 있어도 다시 실행하기",
+      "full": "자동으로 정한 라운드 수 그대로 (실제 규모)",
+      "interval": "상태를 확인하는 간격(초)",
+      "json": "JSON으로 출력 (스크립트용)",
+      "lang": "출력 언어",
+      "list": "프로젝트·시뮬레이션·보고서 목록 보기",
+      "noGraphMemory": "시뮬레이션 중 그래프 메모리를 갱신하지 않기 (빠르지만 보고서 근거가 줄어요)",
+      "out": "보고서를 저장할 위치 (폴더나 파일)",
+      "persona": "인물 유형 프리셋 (ko_everyday, en_everyday, zh_everyday, mixed_global, off)",
+      "prompt": "예측하고 싶은 내용 한 문장",
+      "quick": "빠른 시험: {rounds}라운드 (기본값)",
+      "report": "보고서 만들기 또는 내려받기",
+      "reportId": "generate는 시뮬레이션 ID, download는 보고서 ID",
+      "rounds": "라운드 수 직접 지정",
+      "run": "문서를 올려서 보고서까지 한 번에 실행",
+      "serve": "백엔드 서버 실행",
+      "show": "프로젝트·시뮬레이션·보고서 자세히 보기",
+      "start": "준비된 시뮬레이션 시작 (또는 다시 시작)",
+      "status": "서버, 그래프 백엔드, AI 모델 연결 상태",
+      "stop": "시뮬레이션 중지",
+      "usage": "단계·모델별 토큰 사용량",
+      "watch": "프로젝트·시뮬레이션·보고서 진행 상황 실시간 보기"
+    },
+    "progress": {
+      "left": "약 {time} 남음"
+    },
+    "report": {
+      "done": "보고서가 완성됐어요: {id}",
+      "saved": "보고서를 저장했어요: {path} ({size}바이트)",
+      "started": "보고서를 쓰기 시작했어요: {id}"
+    },
+    "run": {
+      "done": "모두 끝났어요.",
+      "graphDone": "그래프가 준비됐어요: {graph}",
+      "interrupted": "보기를 멈췄어요. 작업은 서버에서 계속 돌아요. 다시 보려면 `mirofish watch {target}`",
+      "ontology": "파일 {files}개를 분석해 온톨로지를 만드는 중이에요…",
+      "prepared": "페르소나와 설정이 준비됐어요 (프리셋 {preset}, 시드 {seed})",
+      "project": "프로젝트: {id}",
+      "roundsDone": "시뮬레이션이 끝났어요: {round}/{total}라운드",
+      "simulation": "시뮬레이션: {id}"
+    },
+    "show": {
+      "files": "파일: {files}",
+      "graph": "그래프: {graph}",
+      "ingest": "그래프 메모리 반영 대기: {n}건",
+      "models": "모델: {models}",
+      "project": "프로젝트 {id} · {status} · {name}",
+      "report": "보고서 {id} · {status}",
+      "reportSim": "시뮬레이션: {sim}",
+      "reportTitle": "보고서 {id} · {status}\n{title}",
+      "requirement": "예측 요청: {text}",
+      "run": "실행 {runner} · {round}/{total}라운드 · 행동 {actions}건",
+      "simulation": "시뮬레이션 {id} · {status} · 프로젝트 {project}"
+    },
+    "stage": {
+      "graph": "그래프 만드는 중 {pct}%",
+      "ingest": "라운드 끝, 그래프 메모리 반영 중 (남은 {n}건)",
+      "prepare": "환경 준비: {stage} {pct}%",
+      "report": "보고서 작성 {done}/{total}섹션",
+      "run": "시뮬레이션 {round}/{total}라운드 · 행동 {actions}건"
+    },
+    "start": {
+      "started": "시뮬레이션을 시작했어요: {id}"
+    },
+    "status": {
+      "graph": "그래프 백엔드: {kind} (임베딩 {embeddings})",
+      "pool": "에이전트 모델 비율: {pool}",
+      "profiles": "AI 프로필:",
+      "routes": "단계별 모델: {routes}",
+      "server": "서버: {url} (연결됨)"
+    },
+    "stop": {
+      "done": "시뮬레이션을 멈췄어요: {id}",
+      "pending": "멈추는 중이에요. 그래프 반영이 끝나는 중이니 잠시 뒤 `mirofish show`로 확인해 주세요."
+    },
+    "usage": {
+      "totals": "합계: 호출 {calls}번 · 입력 {input} · 캐시 {cached} · 출력 {output}"
+    },
+    "watch": {
+      "stopped": "보기를 멈췄어요. 작업은 서버에서 계속 돌아요."
+    }
   }
 }

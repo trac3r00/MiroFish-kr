@@ -47,6 +47,16 @@ _cleanup_registered = False
 IS_WINDOWS = sys.platform == 'win32'
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 class RunnerStatus(str, Enum):
     """运行器状态"""
     IDLE = "idle"
@@ -445,6 +455,9 @@ class SimulationRunner:
     _finalization_locks: Dict[str, threading.Lock] = {}
     _finalization_locks_guard = threading.Lock()
     _manual_stop_requests: set[str] = set()
+    _draining_after_rounds: set[str] = set()
+    # A stop request waits this long for the monitor, then answers 202 ("stopping").
+    STOP_WAIT_SECONDS: float = float(os.environ.get("SIMULATION_STOP_WAIT_SECONDS", "10"))
 
     # Terminal run states (and their finalization locks / cursor indexes) are
     # evicted from memory this long after they became terminal; they reload
@@ -1185,35 +1198,72 @@ class SimulationRunner:
 
         The process stays alive afterwards to serve interviews, so waiting for
         process exit would block report generation until someone closes the
-        environment. Runs under the finalization lock so it never overlaps the
-        exit-time drain (graph.add must not be replayed).
+        environment. The drain is claimed under the finalization lock, so the
+        exit-time and manual-stop paths skip it and graph.add is never replayed,
+        but it runs outside the lock: ingestion can take minutes and a stop
+        request must not wait for it.
         """
-        if not cls._graph_memory_enabled.get(simulation_id, False):
-            return
+        with cls._finalization_lock(simulation_id):
+            if not cls._graph_memory_enabled.pop(simulation_id, False):
+                return
+            cls._draining_after_rounds.add(simulation_id)
 
         def drain():
-            with cls._finalization_lock(simulation_id):
-                if not cls._graph_memory_enabled.get(simulation_id, False):
-                    return
-                try:
-                    ZepGraphMemoryManager.stop_updater(simulation_id)
-                except Exception as error:
-                    # The updater stays registered, so the report barrier keeps
-                    # blocking and the exit-time finalization surfaces the error.
-                    logger.error(
-                        "轮次结束后的图谱写入未完成: simulation_id=%s, error=%s",
-                        simulation_id,
-                        error,
-                    )
-                    return
-                cls._graph_memory_enabled.pop(simulation_id, None)
+            try:
+                ZepGraphMemoryManager.stop_updater(simulation_id)
                 logger.info("轮次结束，图谱写入已完成: simulation_id=%s", simulation_id)
+            except Exception as error:
+                # The updater stays registered (report barrier keeps blocking);
+                # hand it back so exit-time finalization retries and surfaces it.
+                logger.error(
+                    "轮次结束后的图谱写入未完成: simulation_id=%s, error=%s",
+                    simulation_id,
+                    error,
+                )
+                with cls._finalization_lock(simulation_id):
+                    cls._graph_memory_enabled[simulation_id] = True
+            finally:
+                cls._draining_after_rounds.discard(simulation_id)
 
         threading.Thread(
             target=drain,
             name=f"graph-drain-{simulation_id}",
             daemon=True,
         ).start()
+
+    @classmethod
+    def recover_interrupted_runs(cls) -> List[str]:
+        """Mark runs left active by a previous server process as stopped.
+
+        A run whose status is starting/running/paused/stopping but whose process
+        is gone can never finish on its own, and the simulation could not be
+        started again. Call once at server start (not from create_app: tests
+        build apps against the real uploads directory).
+        """
+        recovered = []
+        active = {RunnerStatus.STARTING, RunnerStatus.RUNNING, RunnerStatus.PAUSED, RunnerStatus.STOPPING}
+        if not os.path.isdir(cls.RUN_STATE_DIR):
+            return recovered
+        for entry in os.scandir(cls.RUN_STATE_DIR):
+            if not entry.is_dir() or entry.name in cls._processes:
+                continue
+            state = cls._load_run_state(entry.name)
+            if state is None or state.runner_status not in active:
+                continue
+            if state.process_pid and _pid_alive(state.process_pid):
+                continue
+            state.runner_status = RunnerStatus.STOPPED
+            state.twitter_running = False
+            state.reddit_running = False
+            state.completed_at = datetime.now().isoformat()
+            state.error = t_detail('api.runInterruptedByRestart')
+            cls._run_states[entry.name] = state
+            cls._save_run_state(state)
+            cls._sync_simulation_status(entry.name, RunnerStatus.STOPPED, state.error)
+            recovered.append(entry.name)
+        if recovered:
+            logger.warning("已恢复上次服务中断的模拟状态: %s", recovered)
+        return recovered
 
     @classmethod
     def estimate_run(
@@ -1288,6 +1338,7 @@ class SimulationRunner:
             state is not None
             and state.runner_status == RunnerStatus.RUNNING
             and not cls._graph_memory_enabled.get(state.simulation_id, False)
+            and state.simulation_id not in cls._draining_after_rounds
             and cls._check_all_platforms_completed(state)
         )
 
@@ -1375,8 +1426,15 @@ class SimulationRunner:
                 process.wait(timeout=5)
     
     @classmethod
-    def stop_simulation(cls, simulation_id: str) -> SimulationRunState:
-        """停止模拟"""
+    def stop_simulation(
+        cls, simulation_id: str, wait_seconds: Optional[float] = None
+    ) -> SimulationRunState:
+        """停止模拟
+
+        wait_seconds: how long to wait for the monitor to finish finalization.
+        Shutdown keeps the default (long enough for graph ingestion to drain);
+        the HTTP stop passes a short value and answers 202 while it continues.
+        """
         with cls._finalization_lock(simulation_id):
             state = cls.get_run_state(simulation_id)
             if not state:
@@ -1440,7 +1498,7 @@ class SimulationRunner:
             and monitor is not threading.current_thread()
             and monitor.is_alive()
         ):
-            wait_timeout = max(
+            wait_timeout = wait_seconds if wait_seconds is not None else max(
                 30.0,
                 ZEP_INGESTION_WAIT_TIMEOUT_SECONDS
                 + ZEP_HTTP_REQUEST_TIMEOUT_SECONDS
